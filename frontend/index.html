@@ -51,13 +51,6 @@
       <button class="main-nav-btn main-nav-btn--active" data-screen="wizard">
         Пошагово
       </button>
-      <!-- 2D схема ДТП -->
-      <button class="main-nav-btn" data-screen="diagram">
-        Схема ДТП
-      </button>
-      <!-- Шаблон европротокола -->
-      <button class="main-nav-btn" data-screen="euro">
-        Европротокол
       </button>
       <!-- Подсказки и мини‑чат -->
       <button class="main-nav-btn" data-screen="help">
@@ -180,49 +173,135 @@
         </div>
       </section>
 
-      <!-- ЭКРАН 2: 2D схемa ДТП -->
-      <section class="screen" id="screen-diagram">
-        <div class="card">
+      <section class="screen screen--active" id="screen-wizard">
+        <!-- ШАГ 1: выбор типа ДТП -->
+        <div class="card wizard-step wizard-step--active" data-step="1">
+          <!-- ... текущий контент выбора серьёзное ДТП / европротокол ... -->
+          <div class="card-footer">
+            <button class="btn-secondary" id="wizardPrevBtn" disabled>Назад</button>
+            <button class="btn-primary" id="wizardNextBtn" disabled>Далее</button>
+          </div>
+        </div>
+
+        <!-- ШАГ 2: аварийка и знак -->
+        <div class="card wizard-step" data-step="2">
           <div class="card-header">
-            <h2 class="card-title">2D‑схема ДТП (вид сверху)</h2>
+            <h2 class="card-title">Шаг 2. Обозначьте место ДТП</h2>
             <p class="card-subtitle">
-              Используйте готовые элементы, чтобы изобразить расположение
-              автомобилей, людей и повреждений.
+              Выставьте аварийный знак и включите аварийную сигнализацию.
+            </p>
+          </div>
+
+          <!-- PNG в центре -->
+          <div class="step-image-center">
+            <img src="png/1.png" alt="Аварийный знак" class="step-image" />
+          </div>
+
+          <div class="card-footer">
+            <button class="btn-secondary wizard-back">Назад</button>
+            <button class="btn-primary wizard-next">Далее</button>
+          </div>
+        </div>
+
+        <!-- ШАГ 3: вызвать 112 -->
+        <div class="card wizard-step" data-step="3">
+          <div class="card-header">
+            <h2 class="card-title">Шаг 3. При необходимости вызовите 112</h2>
+            <p class="card-subtitle">
+              Если есть пострадавшие или угроза, незамедлительно позвоните по номеру 112.
+            </p>
+          </div>
+
+          <div class="step-image-center">
+            <img src="png/2.png" alt="Позвонить 112" class="step-image" />
+          </div>
+
+          <div class="card-footer">
+            <button class="btn-secondary wizard-back">Назад</button>
+            <button class="btn-primary wizard-next">Далее</button>
+          </div>
+        </div>
+
+        <!-- ШАГ 4: проверить ОСАГО -->
+        <div class="card wizard-step" data-step="4">
+          <div class="card-header">
+            <h2 class="card-title">Шаг 4. Проверьте ОСАГО</h2>
+            <p class="card-subtitle">
+              Убедитесь, что у обоих водителей есть действующие полисы ОСАГО.
+            </p>
+          </div>
+
+          <div class="step-image-center">
+            <img src="png/3.png" alt="Полис ОСАГО" class="step-image" />
+          </div>
+
+          <div class="card-footer">
+            <button class="btn-secondary wizard-back">Назад</button>
+            <button class="btn-primary wizard-next">Далее</button>
+          </div>
+        </div>
+
+        <!-- ШАГ 5: загрузка фото -->
+        <div class="card wizard-step" data-step="5">
+          <div class="card-header">
+            <h2 class="card-title">Шаг 5. Сделайте и приложите фотографии</h2>
+            <p class="card-subtitle">
+              Сфотографируйте место ДТП, повреждения и номера машин.
+            </p>
+          </div>
+
+          <div class="step-image-center">
+            <img src="png/4.png" alt="Фото ДТП" class="step-image" />
+          </div>
+
+          <!-- единственное место для загрузки фото -->
+          <div class="upload-block">
+            <input
+              type="file"
+              id="fileInput"
+              multiple
+              accept="image/*,application/pdf"
+            />
+            <p class="upload-hint">
+              Добавьте фото места ДТП и повреждений. Размер и формат будут проверяться на сервере.
+            </p>
+            <ul class="upload-list" id="uploadList"></ul>
+          </div>
+
+          <div class="card-footer">
+            <button class="btn-secondary wizard-back">Назад</button>
+            <button class="btn-primary wizard-next">Далее</button>
+          </div>
+        </div>
+
+        <!-- ШАГ 6: схема ДТП (вместо отдельной вкладки) -->
+        <div class="card wizard-step" data-step="6">
+          <div class="card-header">
+            <h2 class="card-title">Шаг 6. Постройте схему ДТП</h2>
+            <p class="card-subtitle">
+              Используйте элементы, чтобы показать расположение машин и повреждений.
             </p>
           </div>
 
           <div class="diagram-layout">
-            <!-- Палитра элементов -->
             <div class="diagram-palette" id="diagramPalette">
+              <!-- та же палитра, что была во вкладке "Схема ДТП" -->
               <div class="palette-title">Объекты</div>
-              <!-- тут привязка к PNG в папке png/ -->
-              <button class="palette-item" data-shape="car" data-image="png/car.png">
+              <button class="palette-item" data-shape="car" data-image="png/car1.png">
                 Машина A
               </button>
-              <button class="palette-item" data-shape="car" data-image="png/gruz.png">
+              <button class="palette-item" data-shape="car" data-image="png/car2.png">
                 Машина B
               </button>
-              <button class="palette-item" data-shape="person">
-                Человек
-              </button>
-              <button class="palette-item" data-shape="scooter">
-                Самокат
-              </button>
-              <button class="palette-item" data-shape="bike">
-                Велосипед
-              </button>
+              <button class="palette-item" data-shape="person">Человек</button>
+              <button class="palette-item" data-shape="scooter">Самокат</button>
+              <button class="palette-item" data-shape="bike">Велосипед</button>
 
               <div class="palette-title">Повреждения</div>
-              <button class="palette-item" data-shape="impact">
-                Место удара
-              </button>
-              <button class="palette-item" data-shape="dent">
-                Вмятина
-              </button>
+              <button class="palette-item" data-shape="impact">Место удара</button>
+              <button class="palette-item" data-shape="dent">Вмятина</button>
             </div>
 
-
-            <!-- Поле схемы -->
             <div class="diagram-canvas" id="diagramCanvas">
               <span class="diagram-placeholder">
                 Нажмите на элемент слева, чтобы добавить его на схему.
@@ -231,124 +310,102 @@
           </div>
 
           <div class="card-footer">
-            <button class="btn-secondary" id="diagramClearBtn">
-              Очистить схему
-            </button>
-            <button class="btn-primary" id="diagramSaveBtn">
-              Сохранить схему
+            <button class="btn-secondary wizard-back">Назад</button>
+            <button class="btn-primary wizard-next" id="diagramSaveBtn">
+              Далее
             </button>
           </div>
-
-          <p class="helper-text">
-            Для более наглядной машины можно использовать SVG‑иконку автомобиля
-            вместо прямоугольника: фронтендер может подменить текст "Машина"
-            на встроенное SVG или иконку из набора.
-          </p>
         </div>
-      </section>
 
-      <!-- ЭКРАН 3: Шаблон европротокола -->
-      <section class="screen" id="screen-euro">
-        <div class="card">
+        <!-- ШАГ 7: форма европротокола -->
+        <div class="card wizard-step" data-step="7">
+          <!-- сюда переносишь форму европротокола из вкладки "Европротокол" -->
+          <!-- ... поля date/place/witnesses/auto A/B/circumstances ... -->
+
+          <div class="card-footer">
+            <button class="btn-secondary wizard-back">Назад</button>
+            <button class="btn-primary wizard-next" id="euroSaveBtn">
+              Далее
+            </button>
+          </div>
+        </div>
+
+        <!-- ШАГ 8: чек‑лист/галочки -->
+        <div class="card wizard-step" data-step="8">
           <div class="card-header">
-            <h2 class="card-title">Шаблон европротокола</h2>
+            <h2 class="card-title">Шаг 8. Отметьте характер ДТП и повреждения</h2>
             <p class="card-subtitle">
-              Упрощённая форма для заполнения основных полей европротокола.
+              Поставьте галочки в пунктах, которые подходят к вашей ситуации.
             </p>
           </div>
 
-          <!-- TODO BACKEND: связать с реальной структурой документа / PDF -->
-          <form class="euro-form" id="euroForm">
-            <div class="field">
-              <label for="euroDate">Дата и время ДТП</label>
-              <input id="euroDate" name="date" type="datetime-local" />
-            </div>
+          <div class="step-image-center">
+            <img src="png/7.png" alt="Чек‑лист" class="step-image" />
+          </div>
 
-            <div class="field">
-              <label for="euroPlace">Место ДТП</label>
-              <input
-                id="euroPlace"
-                name="place"
-                type="text"
-                placeholder="Город, улица, ориентиры"
-              />
-            </div>
+          <div class="field-group">
+            <label class="checkbox-row">
+              <input type="checkbox" name="check_collision" />
+              Столкновение двух транспортных средств
+            </label>
+            <label class="checkbox-row">
+              <input type="checkbox" name="check_parked" />
+              Повреждение припаркованного автомобиля
+            </label>
+            <label class="checkbox-row">
+              <input type="checkbox" name="check_minor" />
+              Небольшие повреждения без протечки жидкостей
+            </label>
+            <!-- и т.д., по желанию -->
+          </div>
 
-            <div class="field">
-              <label for="euroWitnesses">Свидетели (ФИО, контакты)</label>
-              <textarea
-                id="euroWitnesses"
-                name="witnesses"
-                rows="2"
-                placeholder="Если свидетелей нет, можно написать «нет»"
-              ></textarea>
-            </div>
+          <div class="card-footer">
+            <button class="btn-secondary wizard-back">Назад</button>
+            <button class="btn-primary wizard-next">Далее</button>
+          </div>
+        </div>
 
-            <div class="field-group">
-              <p class="field-group-title">Данные автомобиля A</p>
-              <div class="field">
-                <label for="euroCarAOwner">Страхователь / владелец</label>
-                <input
-                  id="euroCarAOwner"
-                  name="carA_owner"
-                  type="text"
-                  placeholder="ФИО"
-                />
-              </div>
-              <div class="field">
-                <label for="euroCarAPlate">Госномер</label>
-                <input
-                  id="euroCarAPlate"
-                  name="carA_plate"
-                  type="text"
-                  placeholder="А000АА000"
-                />
-              </div>
-            </div>
+        <!-- ШАГ 9: подписи -->
+        <div class="card wizard-step" data-step="9">
+          <div class="card-header">
+            <h2 class="card-title">Шаг 9. Подписи обоих водителей</h2>
+            <p class="card-subtitle">
+              Убедитесь, что оба водителя поставили подписи в документе.
+            </p>
+          </div>
 
-            <div class="field-group">
-              <p class="field-group-title">Данные автомобиля B</p>
-              <div class="field">
-                <label for="euroCarBOwner">Страхователь / владелец</label>
-                <input
-                  id="euroCarBOwner"
-                  name="carB_owner"
-                  type="text"
-                  placeholder="ФИО"
-                />
-              </div>
-              <div class="field">
-                <label for="euroCarBPlate">Госномер</label>
-                <input
-                  id="euroCarBPlate"
-                  name="carB_plate"
-                  type="text"
-                  placeholder="А000АА000"
-                />
-              </div>
-            </div>
+          <div class="step-image-center">
+            <img src="png/8.png" alt="Подпись" class="step-image" />
+          </div>
 
-            <div class="field">
-              <label for="euroCircumstances">
-                Краткое описание обстоятельств ДТП
-              </label>
-              <textarea
-                id="euroCircumstances"
-                name="circumstances"
-                rows="3"
-                placeholder="Например: автомобиль A двигался прямо, автомобиль B поворачивал налево..."
-              ></textarea>
-            </div>
+          <div class="card-footer">
+            <button class="btn-secondary wizard-back">Назад</button>
+            <button class="btn-primary wizard-next">Далее</button>
+          </div>
+        </div>
 
-            <div class="profile-footer">
-              <!-- TODO BACKEND: сохранить черновик европротокола -->
-              <button type="button" class="btn-primary" id="euroSaveBtn">
-                Сохранить данные европротокола
-              </button>
-            </div>
-          </form>
+        <!-- ШАГ 10: передать в страховую -->
+        <div class="card wizard-step" data-step="10">
+          <div class="card-header">
+            <h2 class="card-title">Шаг 10. Передайте европротокол в страховую</h2>
+            <p class="card-subtitle">
+              Передайте оформленный европротокол в страховую компанию в установленные сроки.
+            </p>
+          </div>
+
+          <div class="step-image-center">
+            <img src="png/9.png" alt="Страховая компания" class="step-image" />
+          </div>
+
+          <div class="card-footer">
+            <button class="btn-secondary wizard-back">Назад</button>
+            <button class="btn-primary" id="wizardFinishBtn">
+              Завершить
+            </button>
+          </div>
         </div>
       </section>
+
 
       <!-- ЭКРАН 4: Подсказки и мини‑чат -->
       <section class="screen" id="screen-help">
@@ -506,3 +563,4 @@
 </body>
 </html>
 
+европротокол

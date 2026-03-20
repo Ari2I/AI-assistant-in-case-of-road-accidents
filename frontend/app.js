@@ -24,6 +24,11 @@ const wizardPrevBtn = document.getElementById("wizardPrevBtn");
 const fileInput = document.getElementById("fileInput");
 const uploadList = document.getElementById("uploadList");
 
+// GPS
+const detectLocationBtn = document.getElementById("detectLocationBtn");
+const euroPlaceInput = document.getElementById("euroPlace");
+
+
 // 2D схема
 const diagramPalette = document.getElementById("diagramPalette");
 const diagramCanvas = document.getElementById("diagramCanvas");
@@ -50,10 +55,32 @@ const chatSendBtn = document.getElementById("chatSendBtn");
 const langSwitch = document.getElementById("langSwitch");
 let currentLang = "ru";
 
-// Состояние шагов
+
+
+// Общее состояние шагов мастера (10 шагов: 1 — выбор типа, 2–10 — действия по европротоколу)
 let currentStep = 1;
-const totalSteps = 4;
-let selectedAccidentType = null;
+const totalSteps = 10;
+
+// Все шаги мастера (div.wizard-step с data-step="1"...)
+const wizardSteps = document.querySelectorAll(".wizard-step");
+
+// Функция показать нужный шаг и обновить шкалу прогресса
+function showStep(step) {
+  wizardSteps.forEach((s) => {
+    const stepNum = Number(s.dataset.step);
+    s.classList.toggle("wizard-step--active", stepNum === step);
+  });
+
+  const percent = (step / totalSteps) * 100;
+  topProgressBar.style.width = percent + "%";
+  stepLabel.textContent = `Шаг ${step} из ${totalSteps}`;
+}
+
+// Первоначальный показ первого шага
+showStep(currentStep);
+
+
+
 
 // ----------------------------------------------
 // Навигация по основным экранам
@@ -291,6 +318,61 @@ euroSaveBtn.addEventListener("click", () => {
   console.log("Данные европротокола:", payload);
 });
 
+
+
+
+// ----------------------------------------------
+// Геолокация и подтяжка адреса
+// ----------------------------------------------
+
+if (detectLocationBtn) {
+  detectLocationBtn.addEventListener("click", () => {
+    if (!navigator.geolocation) {
+      alert("Геолокация не поддерживается этим устройством.");
+      return;
+    }
+
+    detectLocationBtn.disabled = true;
+    detectLocationBtn.textContent = "Определяем...";
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const { latitude, longitude } = position.coords;
+        console.log("Координаты:", latitude, longitude);
+
+        // TODO BACKEND: отправить координаты на сервер,
+        // сделать reverse-geocoding и вернуть строку адреса.
+        //
+        // Пример контракта:
+        //  endpoint: GET /api/geocode/reverse?lat=...&lon=...
+        //
+        // Здесь просто имитируем ответ:
+        setTimeout(() => {
+          const mockAddress = `Коорд.: ${latitude.toFixed(
+            5
+          )}, ${longitude.toFixed(5)} (подставить реальный адрес)`;
+          euroPlaceInput.value = mockAddress;
+
+          detectLocationBtn.disabled = false;
+          detectLocationBtn.textContent = "Определить";
+        }, 800);
+      },
+      (error) => {
+        console.error("Ошибка геолокации:", error);
+        alert("Не удалось получить геопозицию. Разрешите доступ к местоположению.");
+        detectLocationBtn.disabled = false;
+        detectLocationBtn.textContent = "Определить";
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 0,
+      }
+    );
+  });
+}
+
+
 // ----------------------------------------------
 // Мини‑чат с ассистентом
 // ----------------------------------------------
@@ -346,4 +428,59 @@ if (langSwitch) {
   });
 }
 
+
+// Универсальная обработка кнопок "Далее" и "Назад" в мастере
+document.addEventListener("click", (e) => {
+  const nextBtn = e.target.closest(".wizard-next");
+  const backBtn = e.target.closest(".wizard-back");
+
+  // Кнопка "Далее"
+  if (nextBtn) {
+    // Особая проверка для шага 1: должен быть выбран европротокол
+    if (currentStep === 1) {
+      if (selectedAccidentType !== "euro") {
+        alert("Сейчас настроен поток только для европротокола. Выберите «Европротокол», чтобы продолжить.");
+        return;
+      }
+
+      // TODO BACKEND: сохранить выбор типа ДТП
+      // POST /api/accident/draft  body: { step: 1, type: selectedAccidentType }
+      console.log("Шаг 1 завершён, тип:", selectedAccidentType);
+    }
+
+    // Можно добавить доп. проверки для других шагов (валидность форм и т.п.)
+
+    if (currentStep < totalSteps) {
+      currentStep += 1;
+      showStep(currentStep);
+    }
+    return;
+  }
+
+  // Кнопка "Назад"
+  if (backBtn) {
+    if (currentStep > 1) {
+      currentStep -= 1;
+      showStep(currentStep);
+    }
+    return;
+  }
+});
+
+
+const wizardFinishBtn = document.getElementById("wizardFinishBtn");
+
+if (wizardFinishBtn) {
+  wizardFinishBtn.addEventListener("click", () => {
+    // TODO BACKEND: финальное сохранение / отправка данных
+    console.log("Мастер заполнения европротокола завершён.");
+
+    // Здесь можно показать экран "Готово" или вернуть пользователя на главный экран
+    alert("Данные по европротоколу собраны. Передайте документы в страховую.");
+  });
+}
+
+
 addDiagramItem
+
+totalSteps

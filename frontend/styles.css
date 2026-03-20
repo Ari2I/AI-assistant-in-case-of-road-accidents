@@ -654,3 +654,39 @@ body {
     display: none;
   }
 }
+.field-inline {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.field-inline input {
+  flex: 1;
+}
+
+.btn-geo {
+  white-space: nowrap;
+  font-size: 11px;
+  padding-inline: 8px;
+}
+
+.step-image-center {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin: 8px 0 12px;
+}
+
+.step-image {
+  max-width: 60%;
+  height: auto;
+  display: block;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  margin-top: 4px;
+}
