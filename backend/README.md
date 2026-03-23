@@ -50,9 +50,9 @@ python create_db.py
 
 
 # 🔧 Как расширять функционал / Добавление новых таблиц
-Откройте create_db.py
-Найдите функцию create_tables()
-Добавьте новый CREATE TABLE запрос:
+1. Откройте create_db.py
+2. Найдите функцию create_tables()
+3. Добавьте новый CREATE TABLE запрос:
 
 cursor.execute("""
     CREATE TABLE IF NOT EXISTS reviews (
@@ -69,28 +69,28 @@ cursor.execute("""
 
 
 # Функционал управления данными
-create_user()
+1. create_user()
 Добавление нового пользователя
 ✅ Да
-get_all_users()
+2. get_all_users()
 Получение всех записей
 ✅ Да
-get_user_by_id()
+3. get_user_by_id()
 Поиск по ID
 ✅ Да
-get_user_by_email()
+4. get_user_by_email()
 Поиск по email
 ✅ Да
-update_user()
+5. update_user()
 Обновление данных
 ✅ Да
-delete_user()
+6. delete_user()
 Удаление по ID
 ✅ Да
-count_users()
+7. count_users()
 Подсчёт записей
 ✅ Да
-clear_all_users()
+8. clear_all_users()
 Очистка всей таблицы
 
 
@@ -119,10 +119,10 @@ def remove_user(user_id):
     return '', 204
 ```
 🔒 Важные особенности
-Параметризованные запросы — все запросы используют %s для защиты от SQL-инъекций
-Обработка ошибок — каждый запрос обёрнут в try/except
-Транзакции — используется commit() и rollback() для целостности данных
-RealDictCursor — результаты возвращаются как словари для удобства
+1. Параметризованные запросы — все запросы используют %s для защиты от SQL-инъекций
+2. Обработка ошибок — каждый запрос обёрнут в try/except
+3. Транзакции — используется commit() и rollback() для целостности данных
+4. RealDictCursor — результаты возвращаются как словари для удобства
 
 
 
