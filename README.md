@@ -148,56 +148,11 @@
 
 ## ⚡ Производительность и стабильность
 
-* Время отклика: **до 2 секунд**
 * Обработка фотографий и документов без зависаний
 * Масштабирование за счёт микросервисов
 * Возможность горизонтального масштабирования ML-модуля
 
 ---
-
-## 📦 Структура монорепозитория (рекомендуемая)
-
-```
-/frontend
-/backend
-/ai-assistant
-/geolocation-module
-/devops
-/docs
-README.md
-```
-
----
-
-## 🚀 Быстрый старт (разработчикам)
-
-### Frontend
-
-```bash
-open index.html via Live Server
-```
-
-### Backend
-
-```bash
-pip install -r requirements.txt
-python manage.py runserver
-```
-
-### AI
-
-```bash
-pip install -r requirements.txt
-echo GIGACHAT_CREDENTIALS=TOKEN > .env
-python bot.py
-```
-
-### DevOps / База данных
-
-```bash
-python create_db.py
-python migrate_db.py
-```
 
 ---
 
