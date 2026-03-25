@@ -1,24 +1,8 @@
 ## Быстрая интеграция
 
-### Шаг 1: Скопируйте файлы в ваш проект
+### Шаг 1: Настроить `.env`
 
-```bash
-# Скопируйте папку geolocation в ваш Django проект
-cp -r geolocation-module/geolocation /path/to/your/project/
-
-# Скопируйте статику
-cp -r geolocation-module/static /path/to/your/project/
-```
-
-### Шаг 2: Установите зависимости
-
-```bash
-pip install -r geolocation-module/requirements.txt
-```
-
-### Шаг 3: Настройте `.env`
-
-Скопируйте `.env.example` в ваш проект и добавьте API ключ:
+Скопируйте `.env.example` в проект и добавьте API ключ:
 
 ```env
 YANDEX_GEOCODER_API_KEY=ваш_ключ_здесь
@@ -26,7 +10,7 @@ YANDEX_GEOCODER_API_KEY=ваш_ключ_здесь
 
 Получите ключ на: https://developer.tech.yandex.ru/
 
-### Шаг 4: Обновите `settings.py`
+### Шаг 2: Обновите `settings.py`
 
 ```python
 # В INSTALLED_APPS добавьте:
@@ -54,7 +38,7 @@ MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 ```
 
-### Шаг 5: Обновите `urls.py`
+### Шаг 3: Обновите `urls.py`
 
 ```python
 from django.urls import path, include
@@ -74,16 +58,17 @@ if settings.DEBUG:
     urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
 ```
 
-### Шаг 6: Примените миграции
+### Шаг 4: Примените миграции
 
 ```bash
 python manage.py makemigrations geolocation
 python manage.py migrate
 ```
 
-### Шаг 7: Добавьте ссылки в навигацию
+### Шаг 5*: Добавьте ссылки в навигацию
 
-В вашем шаблоне (например, `accounts/templates/accounts/profile.html`):
+Это вариативный пункт!!!
+В шаблоне (например, `accounts/templates/accounts/profile.html`):
 
 ```html
 <div class="nav-links">
@@ -95,7 +80,7 @@ python manage.py migrate
 {% block content %}{% endblock %}
 ```
 
-### Шаг 8: Запустите сервер
+### Шаг 6: Запустите сервер
 
 ```bash
 python manage.py runserver
@@ -246,5 +231,6 @@ DATABASE_URL=postgresql://user:pass@host:5432/dbname
 python manage.py collectstatic --noinput
 python manage.py migrate --noinput
 ```
-
+ Сервер запускать: python manage.py runserver 127.0.0.1:8000
+ Открывать в браузере: http://127.0.0.1:8000/geolocation/select/
 ---
