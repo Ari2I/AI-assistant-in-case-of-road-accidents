@@ -74,7 +74,7 @@ function getCookie(name) {
     return cookieValue;
 }
 
-// Универсальная функция запроса
+// Универсальный запрос к API
 async function apiRequest(endpoint, method = 'GET', data = null) {
     const url = `${API_BASE_URL}${endpoint}`;
     const options = {
@@ -135,14 +135,13 @@ optionCards.forEach((card) => {
 
 // Кнопка "Далее" (СОХРАНЕНИЕ ЧЕРНОВИКА)
 if(wizardNextBtn) {
+    // Кнопка "Далее" (ЗАМЕНИТЬ ФУНКЦИЮ ВНУТРИ)
     wizardNextBtn.addEventListener("click", async () => {
         try {
-            // РЕАЛЬНЫЙ ЗАПРОС: Сохранение шага
             await apiRequest('/api/accident/draft/', 'POST', {
                 step: currentStep,
                 type: selectedAccidentType
             });
-
             console.log("Шаг сохранён на сервере");
             if (currentStep < totalSteps) {
                 currentStep += 1;
@@ -150,7 +149,7 @@ if(wizardNextBtn) {
             }
         } catch (error) {
             console.error("Ошибка сохранения шага:", error);
-            alert("Не удалось сохранить прогресс. Проверьте соединение.");
+            alert("Не удалось сохранить прогресс.");
         }
     });
 }
@@ -173,14 +172,12 @@ if (fileInput && uploadList) {
         uploadList.innerHTML = "";
         const files = Array.from(fileInput.files || []);
 
-        // Отображение списка
         files.forEach((file) => {
             const li = document.createElement("li");
             li.textContent = `${file.name} (${Math.round(file.size / 1024)} КБ)`;
             uploadList.appendChild(li);
         });
 
-        // РЕАЛЬНЫЙ ЗАПРОС: Отправка файлов
         if (files.length > 0) {
             const formData = new FormData();
             files.forEach((file) => formData.append('files', file));
@@ -191,8 +188,7 @@ if (fileInput && uploadList) {
                     headers: { 'X-CSRFToken': getCookie('csrftoken') },
                     body: formData
                 });
-                const data = await response.json();
-                console.log("Файлы загружены:", data);
+                console.log("Файлы загружены:", await response.json());
             } catch (error) {
                 console.error("Ошибка загрузки файлов:", error);
             }
@@ -298,7 +294,7 @@ if(openProfileBtn) {
             profilePanel.classList.add("profile-panel--open");
             profilePanel.setAttribute("aria-hidden", "false");
         }
-        // РЕАЛЬНЫЙ ЗАПРОС: Загрузка данных профиля
+        // Загрузка данных профиля
         try {
             const data = await apiRequest('/api/profile/', 'GET');
             if(profileForm) {
@@ -403,10 +399,11 @@ if(geoDetectBtn) {
 }
 
 // ----------------------------------------------
-// МИНИ-ЧАТ С ИИ
+// МИНИ-ЧАТ С АССИСТЕНТОМ (ЗАМЕНИТЬ ЭТОТ БЛОК)
 // ----------------------------------------------
+let chatHistory = []; // Убедитесь, что переменная объявлена
+
 function appendChatMessage(text, type = "user") {
-    if(!chatMessages) return;
     const div = document.createElement("div");
     div.className = "chat-message";
     if (type === "system") div.classList.add("chat-message--system");
@@ -423,11 +420,8 @@ if(chatSendBtn) {
 
         appendChatMessage(text, "user");
         chatInput.value = "";
-
-        // Блокировка ввода во время запроса
         chatSendBtn.disabled = true;
 
-        // РЕАЛЬНЫЙ ЗАПРОС: Чат с AI
         try {
             const data = await apiRequest('/api/chat/', 'POST', {
                 message: text,
@@ -435,7 +429,7 @@ if(chatSendBtn) {
             });
 
             appendChatMessage(data.reply, "system");
-            chatHistory = data.history || []; // Обновляем историю
+            chatHistory = data.history || [];
         } catch (error) {
             console.error("Ошибка чата:", error);
             appendChatMessage("Ошибка соединения с сервером.", "system");

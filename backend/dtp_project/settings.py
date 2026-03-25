@@ -32,7 +32,7 @@ ALLOWED_HOSTS = []
 # Application definition
 
 INSTALLED_APPS = [
-    'corsheaders.middleware.CorsMiddleware',
+    'corsheaders.middleware.CorsMiddleware', # Должно быть первым
     'django.middleware.security.SecurityMiddleware',
     'corsheaders',
     'django.contrib.admin',
@@ -44,9 +44,12 @@ INSTALLED_APPS = [
     'accounts',
     'geolocation',
     'ai_assistant',
+    'corsheaders',
 ]
 
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware', # Должно быть первым
+    'django.middleware.security.SecurityMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
