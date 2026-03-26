@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>Цифровой ассистент при ДТП</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- Глобальные стили приложения -->
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- Корневой контейнер приложения -->
+  <div class="app">
+
+    <!-- Хедер: название, язык, профиль -->
+    <header class="app-header">
+      <div class="app-title">
+        <span class="app-title-main">Ассистент ДТП</span>
+        <span class="app-title-sub">Шаг за шагом через оформление</span>
+      </div>
+
+      <div class="app-header-right">
+        <!-- Переключатель языка (RU/EN) -->
+        <!-- TODO BACKEND: привязать к i18n -->
+        <div class="lang-switch" id="langSwitch" aria-label="Выбор языка">
+          <button class="lang-btn lang-btn--active" data-lang="ru">RU</button>
+          <button class="lang-btn" data-lang="en">EN</button>
+        </div>
+
+        <!-- Кнопка профиля -->
+        <!-- TODO BACKEND: заменить на аватар, имя, если пользователь залогинен -->
+        <button class="profile-icon-btn" id="openProfileBtn">
+          Профиль
+        </button>
+      </div>
+    </header>
+
+    <!-- Верхний прогресс по шагам -->
+    <div class="top-progress">
+      <div class="top-progress-header">
+        <span class="top-progress-label">Оформление ДТП</span>
+        <span class="top-progress-step" id="stepLabel">Шаг 1 из 4</span>
+      </div>
+      <div class="top-progress-bar">
+        <div class="top-progress-bar-fill" id="topProgressBar"></div>
+      </div>
+    </div>
+
+    <!-- Навигация по основным модулям -->
+    <nav class="main-nav">
+      <!-- Пошаговый мастер -->
+      <button class="main-nav-btn main-nav-btn--active" data-screen="wizard">
+        Пошагово
+      </button>
+      </button>
+      <!-- Подсказки и мини‑чат -->
+      <button class="main-nav-btn" data-screen="help">
+        Подсказки
+      </button>
+    </nav>
+
+    <!-- Основная область -->
+    <main class="screen-container">
+
+      <!-- ЭКРАН 1: Пошаговый мастер оформления ДТП -->
+      <section class="screen screen--active" id="screen-wizard">
+
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">Шаг 1. Тип происшествия</h2>
+            <p class="card-subtitle">
+              Укажите, что произошло. Это повлияет на порядок дальнейших действий.
+            </p>
+          </div>
+
+          <!-- Опции выбора: серьёзное ДТП / европротокол -->
+          <div class="options">
+            <!-- Серьёзное ДТП -->
+            <label class="option-card" data-type="serious">
+              <input
+                type="radio"
+                name="accident_type"
+                class="option-radio"
+                aria-label="Серьёзное ДТП"
+              />
+              <div class="option-body">
+                <div class="option-title">Серьёзное ДТП</div>
+                <div class="option-description">
+                  Есть пострадавшие, крупный ущерб или спорная ситуация.
+                </div>
+                <div class="option-tag option-tag--danger">
+                  Обычно требуется вызов ГИБДД
+                </div>
+                <div class="option-diff">
+                  <div class="option-diff-title">
+                    Чем отличается от европротокола
+                  </div>
+                  <p class="option-diff-text">
+                    Применяется, когда есть пострадавшие, предполагается большой
+                    ущерб, много участников или водители не согласны между собой.[web:61]
+                  </p>
+                </div>
+              </div>
+            </label>
+
+            <!-- Европротокол -->
+            <label class="option-card" data-type="euro">
+              <input
+                type="radio"
+                name="accident_type"
+                class="option-radio"
+                aria-label="Европротокол"
+              />
+              <div class="option-body">
+                <div class="option-title">Европротокол</div>
+                <div class="option-description">
+                  Нет пострадавших, только ущерб автомобилям, участники согласны.
+                </div>
+                <div class="option-tag option-tag--ok">
+                  Можно оформить без вызова ГИБДД
+                </div>
+                <div class="option-diff">
+                  <div class="option-diff-title">
+                    Чем отличается от серьёзного ДТП
+                  </div>
+                  <p class="option-diff-text">
+                    Используется при двух авто с ОСАГО, без вреда здоровью и
+                    при согласии водителей, когда ущерб не превышает лимит
+                    по европротоколу.[web:61]
+                  </p>
+                </div>
+              </div>
+            </label>
+          </div>
+
+          <!-- Панель кнопок шагов: Назад / Далее -->
+          <div class="card-footer">
+            <!-- Кнопка "Назад" (на 1 шаге неактивна) -->
+            <button class="btn-secondary" id="wizardPrevBtn" disabled>
+              Назад
+            </button>
+            <!-- Кнопка "Далее" -->
+            <button class="btn-primary" id="wizardNextBtn" disabled>
+              Далее
+            </button>
+            <p class="helper-text">
+              Выбор можно изменить позже, вернувшись назад.
+            </p>
+          </div>
+        </div>
+
+        <!-- Заглушка блока загрузки фото/документов -->
+        <div class="card card--muted">
+          <h3 class="card-title-small">Фотографии и документы</h3>
+          <p class="card-subtitle">
+            Загрузите фото с места ДТП и файлы (полис, ПТС, права).
+          </p>
+
+          <!-- Заглушка компонента загрузки -->
+          <!-- TODO BACKEND: заменить на реальный upload c отправкой на сервер -->
+          <div class="upload-block">
+            <input
+              type="file"
+              id="fileInput"
+              multiple
+              accept="image/*,application/pdf"
+            />
+            <p class="upload-hint">
+              Можно выбрать несколько файлов. Размер и формат будут проверяться
+              на сервере.
+            </p>
+            <ul class="upload-list" id="uploadList"></ul>
+          </div>
+        </div>
+      </section>
+
+      <section class="screen screen--active" id="screen-wizard">
+        <!-- ШАГ 1: выбор типа ДТП -->
+        <div class="card wizard-step wizard-step--active" data-step="1">
+          <!-- ... текущий контент выбора серьёзное ДТП / европротокол ... -->
+          <div class="card-footer">
+            <button class="btn-secondary" id="wizardPrevBtn" disabled>Назад</button>
+            <button class="btn-primary" id="wizardNextBtn" disabled>Далее</button>
+          </div>
+        </div>
+
+        <!-- ШАГ 2: аварийка и знак -->
+        <div class="card wizard-step" data-step="2">
+          <div class="card-header">
+            <h2 class="card-title">Шаг 2. Обозначьте место ДТП</h2>
+            <p class="card-subtitle">
+              Выставьте аварийный знак и включите аварийную сигнализацию.
+            </p>
+          </div>
+
+          <!-- PNG в центре -->
+          <div class="step-image-center">
+            <img src="png/1.png" alt="Аварийный знак" class="step-image" />
+          </div>
+
+          <div class="card-footer">
+            <button class="btn-secondary wizard-back">Назад</button>
+            <button class="btn-primary wizard-next">Далее</button>
+          </div>
+        </div>
+
+        <!-- ШАГ 3: вызвать 112 -->
+        <div class="card wizard-step" data-step="3">
+          <div class="card-header">
+            <h2 class="card-title">Шаг 3. При необходимости вызовите 112</h2>
+            <p class="card-subtitle">
+              Если есть пострадавшие или угроза, незамедлительно позвоните по номеру 112.
+            </p>
+          </div>
+
+          <div class="step-image-center">
+            <img src="png/2.png" alt="Позвонить 112" class="step-image" />
+          </div>
+
+          <div class="card-footer">
+            <button class="btn-secondary wizard-back">Назад</button>
+            <button class="btn-primary wizard-next">Далее</button>
+          </div>
+        </div>
+
+        <!-- ШАГ 4: проверить ОСАГО -->
+        <div class="card wizard-step" data-step="4">
+          <div class="card-header">
+            <h2 class="card-title">Шаг 4. Проверьте ОСАГО</h2>
+            <p class="card-subtitle">
+              Убедитесь, что у обоих водителей есть действующие полисы ОСАГО.
+            </p>
+          </div>
+
+          <div class="step-image-center">
+            <img src="png/3.png" alt="Полис ОСАГО" class="step-image" />
+          </div>
+
+          <div class="card-footer">
+            <button class="btn-secondary wizard-back">Назад</button>
+            <button class="btn-primary wizard-next">Далее</button>
+          </div>
+        </div>
+
+        <!-- ШАГ 5: загрузка фото -->
+        <div class="card wizard-step" data-step="5">
+          <div class="card-header">
+            <h2 class="card-title">Шаг 5. Сделайте и приложите фотографии</h2>
+            <p class="card-subtitle">
+              Сфотографируйте место ДТП, повреждения и номера машин.
+            </p>
+          </div>
+
+          <div class="step-image-center">
+            <img src="png/4.png" alt="Фото ДТП" class="step-image" />
+          </div>
+
+          <!-- единственное место для загрузки фото -->
+          <div class="upload-block">
+            <input
+              type="file"
+              id="fileInput"
+              multiple
+              accept="image/*,application/pdf"
+            />
+            <p class="upload-hint">
+              Добавьте фото места ДТП и повреждений. Размер и формат будут проверяться на сервере.
+            </p>
+            <ul class="upload-list" id="uploadList"></ul>
+          </div>
+
+          <div class="card-footer">
+            <button class="btn-secondary wizard-back">Назад</button>
+            <button class="btn-primary wizard-next">Далее</button>
+          </div>
+        </div>
+
+        <!-- ШАГ 6: схема ДТП (вместо отдельной вкладки) -->
+        <div class="card wizard-step" data-step="6">
+          <div class="card-header">
+            <h2 class="card-title">Шаг 6. Постройте схему ДТП</h2>
+            <p class="card-subtitle">
+              Используйте элементы, чтобы показать расположение машин и повреждений.
+            </p>
+          </div>
+
+          <div class="diagram-layout">
+            <div class="diagram-palette" id="diagramPalette">
+              <!-- та же палитра, что была во вкладке "Схема ДТП" -->
+              <div class="palette-title">Объекты</div>
+              <button class="palette-item" data-shape="car" data-image="png/car1.png">
+                Машина A
+              </button>
+              <button class="palette-item" data-shape="car" data-image="png/car2.png">
+                Машина B
+              </button>
+              <button class="palette-item" data-shape="person">Человек</button>
+              <button class="palette-item" data-shape="scooter">Самокат</button>
+              <button class="palette-item" data-shape="bike">Велосипед</button>
+
+              <div class="palette-title">Повреждения</div>
+              <button class="palette-item" data-shape="impact">Место удара</button>
+              <button class="palette-item" data-shape="dent">Вмятина</button>
+            </div>
+
+            <div class="diagram-canvas" id="diagramCanvas">
+              <span class="diagram-placeholder">
+                Нажмите на элемент слева, чтобы добавить его на схему.
+              </span>
+            </div>
+          </div>
+
+          <div class="card-footer">
+            <button class="btn-secondary wizard-back">Назад</button>
+            <button class="btn-primary wizard-next" id="diagramSaveBtn">
+              Далее
+            </button>
+          </div>
+        </div>
+
+        <!-- ШАГ 7: форма европротокола -->
+        <div class="card wizard-step" data-step="7">
+          <!-- сюда переносишь форму европротокола из вкладки "Европротокол" -->
+          <!-- ... поля date/place/witnesses/auto A/B/circumstances ... -->
+
+          <div class="card-footer">
+            <button class="btn-secondary wizard-back">Назад</button>
+            <button class="btn-primary wizard-next" id="euroSaveBtn">
+              Далее
+            </button>
+          </div>
+        </div>
+
+        <!-- ШАГ 8: чек‑лист/галочки -->
+        <div class="card wizard-step" data-step="8">
+          <div class="card-header">
+            <h2 class="card-title">Шаг 8. Отметьте характер ДТП и повреждения</h2>
+            <p class="card-subtitle">
+              Поставьте галочки в пунктах, которые подходят к вашей ситуации.
+            </p>
+          </div>
+
+          <div class="step-image-center">
+            <img src="png/7.png" alt="Чек‑лист" class="step-image" />
+          </div>
+
+          <div class="field-group">
+            <label class="checkbox-row">
+              <input type="checkbox" name="check_collision" />
+              Столкновение двух транспортных средств
+            </label>
+            <label class="checkbox-row">
+              <input type="checkbox" name="check_parked" />
+              Повреждение припаркованного автомобиля
+            </label>
+            <label class="checkbox-row">
+              <input type="checkbox" name="check_minor" />
+              Небольшие повреждения без протечки жидкостей
+            </label>
+            <!-- и т.д., по желанию -->
+          </div>
+
+          <div class="card-footer">
+            <button class="btn-secondary wizard-back">Назад</button>
+            <button class="btn-primary wizard-next">Далее</button>
+          </div>
+        </div>
+
+        <!-- ШАГ 9: подписи -->
+        <div class="card wizard-step" data-step="9">
+          <div class="card-header">
+            <h2 class="card-title">Шаг 9. Подписи обоих водителей</h2>
+            <p class="card-subtitle">
+              Убедитесь, что оба водителя поставили подписи в документе.
+            </p>
+          </div>
+
+          <div class="step-image-center">
+            <img src="png/8.png" alt="Подпись" class="step-image" />
+          </div>
+
+          <div class="card-footer">
+            <button class="btn-secondary wizard-back">Назад</button>
+            <button class="btn-primary wizard-next">Далее</button>
+          </div>
+        </div>
+
+        <!-- ШАГ 10: передать в страховую -->
+        <div class="card wizard-step" data-step="10">
+          <div class="card-header">
+            <h2 class="card-title">Шаг 10. Передайте европротокол в страховую</h2>
+            <p class="card-subtitle">
+              Передайте оформленный европротокол в страховую компанию в установленные сроки.
+            </p>
+          </div>
+
+          <div class="step-image-center">
+            <img src="png/9.png" alt="Страховая компания" class="step-image" />
+          </div>
+
+          <div class="card-footer">
+            <button class="btn-secondary wizard-back">Назад</button>
+            <button class="btn-primary" id="wizardFinishBtn">
+              Завершить
+            </button>
+          </div>
+        </div>
+      </section>
+
+
+      <!-- ЭКРАН 4: Подсказки и мини‑чат -->
+      <section class="screen" id="screen-help">
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">Подсказки и объяснения</h2>
+            <p class="card-subtitle">
+              Краткие объяснения и пошаговый порядок действий.
+            </p>
+          </div>
+
+          <div class="help-block">
+            <h3 class="help-title">Что такое европротокол?</h3>
+            <p class="help-text">
+              Это официальный документ, с помощью которого два водителя могут
+              оформить ДТП без вызова полиции, если нет пострадавших и соблюдены
+              необходимые условия (два авто, ОСАГО, согласие сторон и т.п.).[web:61]
+            </p>
+          </div>
+
+          <div class="help-block">
+            <h3 class="help-title">Порядок действий при составлении европротокола</h3>
+            <ul class="plain-list">
+              <li>Остановитесь, включите аварийку и выставьте знак аварийной остановки.</li>
+              <li>Убедитесь, что никто не пострадал. Если есть пострадавшие — вызывайте скорую и полицию.</li>
+              <li>Проверьте, что у обоих водителей есть действующий полис ОСАГО.</li>
+              <li>Сфотографируйте место ДТП, повреждения и номера машин.</li>
+              <li>Нарисуйте схему ДТП (можно в модуле «Схема ДТП»).</li>
+              <li>Совместно заполните форму европротокола: дату, место, данные машин и водителей.[web:61]</li>
+              <li>Отметьте галочками подходящие пункты о характере ДТП и повреждениях.</li>
+              <li>Поставьте подписи обоих водителей.</li>
+              <li>Передайте оформленный европротокол в страховую компанию в установленные сроки.</li>
+            </ul>
+          </div>
+
+          <div class="help-block">
+            <h3 class="help-title">Как правильно фотографировать ДТП?</h3>
+            <ul class="plain-list">
+              <li>Сделайте общий план дороги и расположение машин.</li>
+              <li>Снимите повреждения крупным планом для каждой стороны.</li>
+              <li>Зафиксируйте номера, знаки, разметку и следы торможения.</li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- Мини‑чат с нейросетью (фронтовая заглушка) -->
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">Задать вопрос ассистенту</h2>
+            <p class="card-subtitle">
+              Короткий чат, где можно спросить о конкретной ситуации.
+            </p>
+          </div>
+
+          <div class="chat-mini" id="chatMini">
+            <div class="chat-messages" id="chatMessages">
+              <!-- TODO BACKEND/ML: сюда приходят ответы нейросети -->
+              <div class="chat-message chat-message--system">
+                Я — цифровой ассистент. Задайте вопрос, например:
+                «Нужно ли вызывать ГИБДД в моей ситуации?».
+              </div>
+            </div>
+
+            <div class="chat-input-row">
+              <input
+                type="text"
+                id="chatInput"
+                class="chat-input"
+                placeholder="Напишите вопрос..."
+              />
+              <button class="btn-primary chat-send-btn" id="chatSendBtn">
+                Отправить
+              </button>
+            </div>
+
+            <!-- TODO BACKEND/ML: WebSocket или HTTP API для чата -->
+          </div>
+        </div>
+      </section>
+
+      <!-- ПАНЕЛЬ ПРОФИЛЯ (поверх всего) -->
+      <section class="profile-panel" id="profilePanel" aria-hidden="true">
+        <div class="profile-panel-inner">
+          <header class="profile-header">
+            <h2 class="profile-title">Профиль</h2>
+            <button class="profile-close-btn" id="closeProfileBtn">Закрыть</button>
+          </header>
+
+          <!-- TODO BACKEND: подставить реальные данные пользователя -->
+          <form class="profile-form" id="profileForm">
+            <div class="field">
+              <label for="profileName">Имя</label>
+              <input
+                id="profileName"
+                name="name"
+                type="text"
+                placeholder="Иван Иванов"
+              />
+            </div>
+            <div class="field">
+              <label for="profileEmail">E‑mail</label>
+              <input
+                id="profileEmail"
+                name="email"
+                type="email"
+                placeholder="you@example.com"
+              />
+            </div>
+            <div class="field">
+              <label for="profilePhone">Телефон</label>
+              <input
+                id="profilePhone"
+                name="phone"
+                type="tel"
+                placeholder="+7 900 000‑00‑00"
+              />
+            </div>
+
+            <div class="field-group">
+              <p class="field-group-title">Смена пароля</p>
+              <div class="field">
+                <label for="profilePassword">Новый пароль</label>
+                <input
+                  id="profilePassword"
+                  name="password"
+                  type="password"
+                  placeholder="••••••••"
+                />
+              </div>
+              <div class="field">
+                <label for="profilePasswordRepeat">Повторите пароль</label>
+                <input
+                  id="profilePasswordRepeat"
+                  name="password_repeat"
+                  type="password"
+                  placeholder="••••••••"
+                />
+              </div>
+            </div>
+
+            <div class="profile-footer">
+              <!-- TODO BACKEND: обновить профиль пользователя -->
+              <button type="button" class="btn-primary" id="profileSaveBtn">
+                Сохранить
+              </button>
+            </div>
+          </form>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Логика приложения -->
+  <script src="app.js"></script>
+</body>
+</html>
+
+европротокол
