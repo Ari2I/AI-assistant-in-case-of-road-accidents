@@ -1,82 +1,86 @@
-def improve_answer(giga, query, answer, context):
-    """
-    Выполняет самооценку и при необходимости улучшает ответ.
+import json
+import re
+from typing import Tuple
 
-    Модель обязана вернуть полноценный ответ пользователю,
-    а не описание действий или заглушку.
+from gigachat import GigaChat
 
-    Args:
-        giga: клиент GigaChat
-        query (str): вопрос пользователя
-        answer (str): исходный ответ
-        context (str): контекст из RAG
+_MIN_ANSWER_LENGTH = 30
+_MAX_CONTEXT_CHARS = 1500  # обрезаем контекст чтобы не раздувать промпт
 
-    Returns:
-        tuple: (verdict, confidence, issues, final_answer)
-    """
-    review = giga.chat(f"""
-    Ты эксперт по ДТП.
-    
-    Вопрос:
-    {query}
-    
-    Исходный ответ:
-    {answer}
-    
-    Контекст:
-    {context}
-    
-    ЗАДАЧА:
-    1. Оцени ответ на полноту и полезность
-    2. Если ответ хороший — оставь его БЕЗ изменений
-    3. Если плохой — перепиши его полностью
-    
-    ВАЖНО:
-    - Финальный ответ должен быть готовым ответом пользователю
-    - Он должен содержать конкретные действия / объяснения
-    - НЕЛЬЗЯ писать описание вроде "вот улучшенный ответ"
-    - НЕЛЬЗЯ описывать процесс улучшения
-    - НЕЛЬЗЯ писать мета-комментарии
-    
-    ПРОВЕРКА:
-    Если финальный ответ не содержит конкретной информации по вопросу —
-    считай его плохим
-    
-    Верни JSON:
-    
-    {{
-      "verdict": "GOOD" или "BAD",
-      "confidence": число от 0 до 1,
-      "issues": "что не так",
-      "final": "готовый ответ пользователю"
-    }}
-    """)
+_PROMPT_TEMPLATE = """\
+Ты эксперт по ДТП. Оцени качество ответа на вопрос пользователя.
 
-    text = review.choices[0].message.content
+Вопрос: {query}
 
-    import json
-    import re
+Исходный ответ: {answer}
 
-    match = re.search(r'\{.*\}', text, re.DOTALL)
-    if match:
-        text = match.group(0)
+Контекст из базы знаний (фрагмент):
+{context}
+
+Критерии оценки:
+1. Ответ содержит конкретные действия или чёткие объяснения
+2. Ответ не противоречит контексту
+3. Ответ не содержит выдуманных фактов или сумм
+
+Если ответ хороший — оставь "final" без изменений.
+Если плохой — перепиши его полностью.
+
+Верни ТОЛЬКО валидный JSON, без пояснений и markdown:
+{{"verdict": "GOOD" или "BAD", "confidence": число от 0.0 до 1.0, "issues": "что не так", "final": "готовый текст ответа"}}
+"""
+
+# Fallback confidence если парсинг упал, но ответ непустой
+_FALLBACK_CONFIDENCE = 0.5
+
+
+def improve_answer(
+    giga: GigaChat,
+    query: str,
+    answer: str,
+    context: str,
+) -> Tuple[str, float, str, str]:
+    # Обрезаем контекст — длинный RAG ломает JSON-ответ модели
+    trimmed_context = context[:_MAX_CONTEXT_CHARS]
+    if len(context) > _MAX_CONTEXT_CHARS:
+        trimmed_context += "...[обрезано]"
+
+    prompt = _PROMPT_TEMPLATE.format(
+        query=query,
+        answer=answer,
+        context=trimmed_context,
+    )
 
     try:
-        data = json.loads(text)
+        review = giga.chat(prompt)
+        text = review.choices[0].message.content
+
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if not match:
+            # JSON не найден — считаем ответ приемлемым, не обнуляем confidence
+            return "GOOD", _FALLBACK_CONFIDENCE, "no json in response", answer
+
+        data = json.loads(match.group(0))
 
         final = data.get("final", "").strip()
-
-        # 🔴 ЛОГИЧЕСКАЯ проверка (не хардкод строк)
-        # если ответ слишком короткий или неинформативный — fallback
-        if len(final) < 20:  # 🔴 CHANGED
+        if len(final) < _MIN_ANSWER_LENGTH:
             final = answer
 
+        # Если confidence не пришёл или 0 — ставим fallback
+        raw_confidence = data.get("confidence")
+        try:
+            confidence = float(raw_confidence)
+            if confidence == 0.0:
+                confidence = _FALLBACK_CONFIDENCE
+        except (TypeError, ValueError):
+            confidence = _FALLBACK_CONFIDENCE
+
         return (
-            data.get("verdict", "BAD"),
-            float(data.get("confidence", 0.5)),
+            data.get("verdict", "GOOD"),
+            confidence,
             data.get("issues", ""),
-            final
+            final,
         )
 
-    except Exception:
-        return "BAD", 0.0, "parse error", answer
+    except (json.JSONDecodeError, AttributeError, IndexError):
+        # При любой ошибке парсинга — не обнуляем, возвращаем исходный ответ
+        return "GOOD", _FALLBACK_CONFIDENCE, "parse error", answer
