@@ -104,7 +104,7 @@ def rate_answer(
 # ---------------------------------------------------------------------------
 
 def _make_giga() -> GigaChat:
-    return GigaChat(credentials=GIGA_AUTH, verify_ssl_certs=False)
+    return GigaChat(credentials=GIGA_AUTH, verify_ssl_certs=False, scope="GIGACHAT_API_B2B")
 
 
 def _build_history_text(history: list) -> str:
