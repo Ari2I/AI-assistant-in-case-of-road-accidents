@@ -1,0 +1,31 @@
+# docker-compose.yml (в корне репозитория, рядом с папкой backend/)
+version: '3.8'
+
+services:
+  web:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: dtp_assistant
+    ports:
+      - "8000:8000"
+    volumes:
+      # Сохраняем базу данных и медиа-файлы между перезапусками
+      - ./backend/media:/app/media:rw
+      - ./backend/AI_agent/chroma_db:/app/AI_agent/chroma_db:rw
+      - ./backend/staticfiles:/app/staticfiles:rw
+      # Опционально: монтируем .env для удобной смены ключей
+      - ./backend/.env:/app/.env:ro
+    environment:
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-django-insecure-dev-key}
+      - DEBUG=${DEBUG:-False}
+      - ALLOWED_HOSTS=${ALLOWED_HOSTS:-*}
+      - GIGA_AUTH=${GIGA_AUTH}
+      - YANDEX_GEOCODER_API_KEY=${YANDEX_GEOCODER_API_KEY}
+      # Отключаем предупреждение о symlink на Windows
+      - HF_HUB_DISABLE_SYMLINKS_WARNING=1
+    restart: unless-stopped
+
+volumes:
+  backend_data:
+  backend_media:

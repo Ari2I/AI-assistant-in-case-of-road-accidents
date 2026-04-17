@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>Цифровой ассистент при ДТП</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <!-- Хедер -->
+    <header class="app-header">
+      <div class="app-title">
+        <span class="app-title-main" data-i18n="app.title">Ассистент ДТП</span>
+        <span class="app-title-sub" data-i18n="app.subtitle">
+          Шаг за шагом через оформление
+        </span>
+      </div>
+
+      <div class="app-header-right">
+        <div class="lang-switch" id="langSwitch" aria-label="Language switcher">
+          <button class="lang-btn lang-btn--active" data-lang="ru">RU</button>
+          <button class="lang-btn" data-lang="en">EN</button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Верхний прогресс -->
+    <div class="top-progress">
+      <div class="top-progress-header">
+        <span class="top-progress-label" data-i18n="wizard.label">
+          Оформление ДТП
+        </span>
+        <span class="top-progress-step" id="stepLabel">Шаг 1 из 9</span>
+      </div>
+      <div class="top-progress-bar">
+        <div class="top-progress-bar-fill" id="topProgressBar"></div>
+      </div>
+    </div>
+
+    <!-- Навигация -->
+    <nav class="main-nav">
+      <button class="main-nav-btn main-nav-btn--active" data-screen="wizard" data-i18n="nav.wizard">
+        Пошагово
+      </button>
+      <button class="main-nav-btn" data-screen="insurance" data-i18n="nav.insurance">
+        Страховая
+      </button>
+    </nav>
+
+    <main class="screen-container">
+      <!-- ЭКРАН: Пошаговый мастер -->
+      <section class="screen screen--active" id="screen-wizard">
+        <!-- Шаг 1 -->
+        <div class="card wizard-step wizard-step--active" data-step="1">
+          <div class="card-header">
+            <h2 class="card-title" data-i18n="step1.title">
+              Шаг 1. Тип происшествия
+            </h2>
+            <p class="card-subtitle" data-i18n="step1.subtitle">
+              Укажите, что произошло. Для европротокола будут доступны все шаги.
+            </p>
+          </div>
+
+          <div class="options">
+            <!-- Серьёзное ДТП -->
+            <label class="option-card" data-type="serious">
+              <input
+                type="radio"
+                name="accident_type"
+                class="option-radio"
+                aria-label="Серьёзное ДТП"
+              />
+              <div class="option-body">
+                <div class="option-title" data-i18n="step1.serious.title">
+                  Серьёзное ДТП
+                </div>
+                <div class="option-description" data-i18n="step1.serious.desc">
+                  Есть пострадавшие, крупный ущерб или спорная ситуация.
+                </div>
+                <div class="option-tag option-tag--danger" data-i18n="step1.serious.tag">
+                  Обычно требуется вызов ГИБДД
+                </div>
+                <div class="option-diff">
+                  <div class="option-diff-title" data-i18n="step1.serious.diffTitle">
+                    Чем отличается от европротокола
+                  </div>
+                  <p class="option-diff-text" data-i18n="step1.serious.diffText">
+                    Применяется, когда есть пострадавшие, высокий ущерб,
+                    много участников или водители не согласны между собой.
+                  </p>
+                </div>
+              </div>
+            </label>
+
+            <!-- Европротокол -->
+            <label class="option-card" data-type="euro">
+              <input
+                type="radio"
+                name="accident_type"
+                class="option-radio"
+                aria-label="Европротокол"
+              />
+              <div class="option-body">
+                <div class="option-title" data-i18n="step1.euro.title">
+                  Европротокол
+                </div>
+                <div class="option-description" data-i18n="step1.euro.desc">
+                  Нет пострадавших, только ущерб автомобилям, участники согласны.
+                </div>
+                <div class="option-tag option-tag--ok" data-i18n="step1.euro.tag">
+                  Можно оформить без вызова ГИБДД
+                </div>
+                <div class="option-diff">
+                  <div class="option-diff-title" data-i18n="step1.euro.diffTitle">
+                    Чем отличается от серьёзного ДТП
+                  </div>
+                  <p class="option-diff-text" data-i18n="step1.euro.diffText">
+                    Используется при двух авто с ОСАГО, без вреда здоровью и
+                    при согласии водителей, когда ущерб не превышает лимит
+                    по европротоколу.
+                  </p>
+                </div>
+              </div>
+            </label>
+          </div>
+
+          <div class="card-footer">
+            <button class="btn-secondary wizard-back" disabled data-i18n="btn.back">
+              Назад
+            </button>
+            <button class="btn-primary wizard-next" id="wizardNextBtnStep1" disabled data-i18n="btn.next">
+              Далее
+            </button>
+          </div>
+        </div>
+
+        <!-- Шаг 2 -->
+        <div class="card wizard-step" data-step="2">
+          <div class="card-header">
+            <h2 class="card-title" data-i18n="step2.title">
+              Шаг 2. Обозначьте место ДТП
+            </h2>
+            <p class="card-subtitle" data-i18n="step2.subtitle">
+              Выставьте аварийный знак и включите аварийную сигнализацию.
+            </p>
+          </div>
+
+          <div class="step-image-center">
+            <img src="png/Аварийный знак.png" alt="Аварийный знак" class="step-image" />
+          </div>
+
+          <div class="card-footer">
+            <button class="btn-secondary wizard-back" data-i18n="btn.back">
+              Назад
+            </button>
+            <button class="btn-primary wizard-next" data-i18n="btn.next">
+              Далее
+            </button>
+          </div>
+        </div>
+
+        <!-- Шаг 3 -->
+        <div class="card wizard-step" data-step="3">
+          <div class="card-header">
+            <h2 class="card-title" data-i18n="step3.title">
+              Шаг 3. При необходимости вызовите 112
+            </h2>
+            <p class="card-subtitle" data-i18n="step3.subtitle">
+              Если есть пострадавшие или угроза, незамедлительно позвоните по номеру 112.
+            </p>
+          </div>
+
+          <div class="step-image-center">
+            <img src="png/step3_call112.png" alt="Позвонить 112" class="step-image" />
+          </div>
+
+          <div class="card-footer">
+            <button class="btn-secondary wizard-back" data-i18n="btn.back">
+              Назад
+            </button>
+            <button
+              class="btn-secondary"
+              type="button"
+              id="call112Btn"
+              data-i18n="step3.call112"
+            >
+              Позвонить 112
+            </button>
+            <button class="btn-primary wizard-next" data-i18n="btn.next">
+              Далее
+            </button>
+          </div>
+        </div>
+
+        <!-- Шаг 4 -->
+        <div class="card wizard-step" data-step="4">
+          <div class="card-header">
+            <h2 class="card-title" data-i18n="step4.title">
+              Шаг 4. Проверьте полисы ОСАГО
+            </h2>
+            <p class="card-subtitle" data-i18n="step4.subtitle">
+              Убедитесь, что у обоих водителей есть действующие полисы ОСАГО.
+            </p>
+          </div>
+
+          <div class="step-image-center">
+            <img src="png/step4_osago.png" alt="Полис ОСАГО" class="step-image" />
+          </div>
+
+          <div class="card-footer">
+            <button class="btn-secondary wizard-back" data-i18n="btn.back">
+              Назад
+            </button>
+            <a
+              class="btn-secondary"
+              href="https://nsis.ru/"
+              target="_blank"
+              rel="noopener noreferrer"
+              data-i18n="step4.checkOsago"
+            >
+              проверить ОСАГО
+            </a>
+            <button class="btn-primary wizard-next" data-i18n="btn.next">
+              Далее
+            </button>
+          </div>
+        </div>
+
+        <!-- Шаг 5 -->
+        <div class="card wizard-step" data-step="5">
+          <div class="card-header">
+            <h2 class="card-title" data-i18n="step5.title">
+              Шаг 5. Сделайте и приложите фотографии
+            </h2>
+            <p class="card-subtitle" data-i18n="step5.subtitle">
+              Сфотографируйте место ДТП, повреждения и номера машин.
+            </p>
+          </div>
+
+          <div class="step-image-center">
+            <img src="png/step5_photo.png" alt="Фото ДТП" class="step-image" />
+          </div>
+
+          <!-- Кнопка выбрать файлы -->
+          <label for="fileInput" class="btn-secondary upload-btn">
+            <span data-i18n="step5.selectFiles">Выбрать файлы</span>
+            <input
+              type="file"
+              id="fileInput"
+              multiple
+              accept="image/*,application/pdf"
+              style="display: none;"
+            />
+          </label>
+
+          <!-- Кнопка сделать фото (камера) -->
+          <label for="cameraInput" class="btn-secondary upload-btn">
+            <span data-i18n="step5.takePhoto">Сделать фото</span>
+            <input
+              type="file"
+              id="cameraInput"
+              accept="image/*"
+              capture="environment"
+              style="display: none;"
+            />
+          </label>
+
+          <ul class="upload-list" id="uploadList"></ul>
+
+          <div class="card-footer">
+            <button class="btn-secondary wizard-back" data-i18n="btn.back">
+              Назад
+            </button>
+            <button class="btn-primary wizard-next" data-i18n="btn.next">
+              Далее
+            </button>
+          </div>
+        </div>
+
+        <!-- Шаг 6 -->
+        <div class="card wizard-step" data-step="6">
+          <div class="card-header">
+            <h2 class="card-title" data-i18n="step6.title">
+              Шаг 6. Заполните форму европротокола
+            </h2>
+            <p class="card-subtitle" data-i18n="step6.subtitle">
+              Укажите основные данные о ДТП и участниках.
+            </p>
+          </div>
+
+          <form class="euro-form" id="euroForm">
+            <div class="field">
+              <label for="euroDate" data-i18n="euro.dateLabel">
+                Дата и время ДТП
+              </label>
+              <input id="euroDate" name="date" type="datetime-local" />
+            </div>
+
+            <div class="field">
+              <label for="euroPlace" data-i18n="euro.placeLabel">
+                Место ДТП
+              </label>
+              <div class="field-inline">
+                <input
+                  id="euroPlace"
+                  name="place"
+                  type="text"
+                  placeholder="Город, улица, ориентиры"
+                  data-i18n-placeholder="euro.placePlaceholder"
+                />
+                <button
+                  type="button"
+                  class="btn-secondary btn-geo"
+                  id="detectLocationBtn"
+                  data-i18n="euro.detect"
+                >
+                  Определить
+                </button>
+              </div>
+              <p class="helper-text" data-i18n="euro.detectHint">
+                Кнопка попробует определить адрес по вашей геолокации.
+              </p>
+            </div>
+
+            <div class="field">
+              <label for="euroWitnesses" data-i18n="euro.witnessesLabel">
+                Свидетели (ФИО, контакты)
+              </label>
+              <textarea
+                id="euroWitnesses"
+                name="witnesses"
+                rows="2"
+                placeholder="Если свидетелей нет, можно написать «нет»"
+                data-i18n-placeholder="euro.witnessesPlaceholder"
+              ></textarea>
+            </div>
+
+            <div class="field-group">
+              <p class="field-group-title" data-i18n="euro.carA.title">
+                Данные автомобиля A
+              </p>
+              <div class="field">
+                <label for="euroCarAOwner" data-i18n="euro.car.ownerLabel">
+                  Страхователь / владелец
+                </label>
+                <input
+                  id="euroCarAOwner"
+                  name="carA_owner"
+                  type="text"
+                  placeholder="ФИО"
+                  data-i18n-placeholder="euro.car.ownerPlaceholder"
+                />
+              </div>
+              <div class="field">
+                <label for="euroCarAPlate" data-i18n="euro.car.plateLabel">
+                  Госномер
+                </label>
+                <input
+                  id="euroCarAPlate"
+                  name="carA_plate"
+                  type="text"
+                  placeholder="А000АА000"
+                  data-i18n-placeholder="euro.car.platePlaceholder"
+                />
+              </div>
+            </div>
+
+            <div class="field-group">
+              <p class="field-group-title" data-i18n="euro.carB.title">
+                Данные автомобиля B
+              </p>
+              <div class="field">
+                <label for="euroCarBOwner" data-i18n="euro.car.ownerLabel">
+                  Страхователь / владелец
+                </label>
+                <input
+                  id="euroCarBOwner"
+                  name="carB_owner"
+                  type="text"
+                  placeholder="ФИО"
+                  data-i18n-placeholder="euro.car.ownerPlaceholder"
+                />
+              </div>
+              <div class="field">
+                <label for="euroCarBPlate" data-i18n="euro.car.plateLabel">
+                  Госномер
+                </label>
+                <input
+                  id="euroCarBPlate"
+                  name="carB_plate"
+                  type="text"
+                  placeholder="А000АА000"
+                  data-i18n-placeholder="euro.car.platePlaceholder"
+                />
+              </div>
+            </div>
+
+            <div class="field">
+              <label for="euroCircumstances" data-i18n="euro.circLabel">
+                Краткое описание обстоятельств ДТП
+              </label>
+              <textarea
+                id="euroCircumstances"
+                name="circumstances"
+                rows="3"
+                placeholder="Например: автомобиль A двигался прямо, автомобиль B поворачивал налево..."
+                data-i18n-placeholder="euro.circPlaceholder"
+              ></textarea>
+            </div>
+          </form>
+
+          <div class="card-footer">
+            <button class="btn-secondary wizard-back" data-i18n="btn.back">
+              Назад
+            </button>
+            <button class="btn-primary wizard-next" id="euroSaveBtn" data-i18n="btn.next">
+              Далее
+            </button>
+          </div>
+        </div>
+
+        <!-- Шаг 7 -->
+        <div class="card wizard-step" data-step="7">
+          <div class="card-header">
+            <h2 class="card-title" data-i18n="step7.title">
+              Шаг 7. Зафиксируйте заполненный европротокол
+            </h2>
+            <p class="card-subtitle" data-i18n="step7.subtitle">
+              Прикрепите фото заполненных пунктов европротокола для надёжности.
+            </p>
+          </div>
+
+          <div class="step-image-center">
+            <img src="png/step8_proto_photos.png" alt="Фото европротокола" class="step-image" />
+          </div>
+
+          <div class="upload-block">
+            <button
+              type="button"
+              class="btn-secondary"
+              id="protoPhotoBtn"
+              data-i18n="step7.attach"
+            >
+              прикрепите фото заполненых пунктов европротокола
+            </button>
+          </div>
+
+          <div class="card-footer">
+            <button class="btn-secondary wizard-back" data-i18n="btn.back">
+              Назад
+            </button>
+            <button class="btn-primary wizard-next" data-i18n="btn.next">
+              Далее
+            </button>
+          </div>
+        </div>
+
+        <!-- Шаг 8 -->
+        <div class="card wizard-step" data-step="8">
+          <div class="card-header">
+            <h2 class="card-title" data-i18n="step8.title">
+              Шаг 8. Подписи обоих водителей
+            </h2>
+            <p class="card-subtitle" data-i18n="step8.subtitle">
+              Перепроверьте всё и подпишите документ с обеих сторон.
+            </p>
+          </div>
+
+          <div class="step-image-center">
+            <img src="png/step9_sign.png" alt="Подпись" class="step-image" />
+          </div>
+
+          <p class="helper-text" data-i18n="step8.helper">
+            Перепроверьте все данные, убедитесь, что обе стороны согласны и подписи стоят в нужных местах.
+          </p>
+
+          <div class="card-footer">
+            <button class="btn-secondary wizard-back" data-i18n="btn.back">
+              Назад
+            </button>
+            <button class="btn-primary wizard-next" data-i18n="btn.next">
+              Далее
+            </button>
+          </div>
+        </div>
+
+        <!-- Шаг 9 -->
+        <div class="card wizard-step" data-step="9">
+          <div class="card-header">
+            <h2 class="card-title" data-i18n="step9.title">
+              Шаг 9. Передайте документы в страховую
+            </h2>
+            <p class="card-subtitle" data-i18n="step9.subtitle">
+              Передайте оформленный европротокол и материалы в страховую компанию в установленные сроки.
+            </p>
+          </div>
+
+          <div class="step-image-center">
+            <img src="png/step10_insurance.png" alt="Страховая компания" class="step-image" />
+          </div>
+
+          <div class="card-footer">
+            <button class="btn-secondary wizard-back" data-i18n="btn.back">
+              Назад
+            </button>
+            <button class="btn-primary" id="wizardFinishBtn" data-i18n="step9.finish">
+              Завершить
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ЭКРАН: Страховая -->
+      <section class="screen" id="screen-insurance">
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title" data-i18n="insurance.title">
+              Страховая
+            </h2>
+            <p class="card-subtitle" data-i18n="insurance.subtitle">
+              Здесь будет чат с ботом, который сможет рассчитать максимальную сумму выплаты от страховой.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ПАНЕЛЬ ПРОФИЛЯ -->
+      <section class="profile-panel" id="profilePanel" aria-hidden="true">
+        <div class="profile-panel-inner">
+          <header class="profile-header">
+            <h2 class="profile-title" data-i18n="profile.title">Профиль</h2>
+            <button class="profile-close-btn" id="closeProfileBtn" data-i18n="profile.close">
+              Закрыть
+            </button>
+          </header>
+
+          <form class="profile-form" id="profileForm">
+            <div class="field">
+              <label for="profileName" data-i18n="profile.nameLabel">Имя</label>
+              <input
+                id="profileName"
+                name="name"
+                type="text"
+                placeholder="Иван Иванов"
+                data-i18n-placeholder="profile.namePlaceholder"
+              />
+            </div>
+            <div class="field">
+              <label for="profileEmail" data-i18n="profile.emailLabel">E‑mail</label>
+              <input
+                id="profileEmail"
+                name="email"
+                type="email"
+                placeholder="you@example.com"
+                data-i18n-placeholder="profile.emailPlaceholder"
+              />
+            </div>
+            <div class="field">
+              <label for="profilePhone" data-i18n="profile.phoneLabel">Телефон</label>
+              <input
+                id="profilePhone"
+                name="phone"
+                type="tel"
+                placeholder="+7 900 000‑00‑00"
+                data-i18n-placeholder="profile.phonePlaceholder"
+              />
+            </div>
+
+            <div class="field-group">
+              <p class="field-group-title" data-i18n="profile.passwordTitle">
+                Смена пароля
+              </p>
+              <div class="field">
+                <label for="profilePassword" data-i18n="profile.newPassword">
+                  Новый пароль
+                </label>
+                <input
+                  id="profilePassword"
+                  name="password"
+                  type="password"
+                  placeholder="••••••••"
+                />
+              </div>
+              <div class="field">
+                <label for="profilePasswordRepeat" data-i18n="profile.repeatPassword">
+                  Повторите пароль
+                </label>
+                <input
+                  id="profilePasswordRepeat"
+                  name="password_repeat"
+                  type="password"
+                  placeholder="••••••••"
+                />
+              </div>
+            </div>
+
+            <div class="profile-footer">
+              <button type="button" class="btn-primary" id="profileSaveBtn" data-i18n="profile.save">
+                Сохранить
+              </button>
+            </div>
+          </form>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- ВСПЛЫВАЮЩИЙ ЧАТ -->
+  <div class="chat-widget" id="chatWidget">
+    <button class="chat-toggle-btn" id="chatToggleBtn">
+      ?
+    </button>
+    <div class="chat-window" id="chatWindow">
+      <div class="chat-header">
+        <span data-i18n="chat.title">Вопрос ассистенту</span>
+        <button class="chat-close-btn" id="chatCloseBtn">×</button>
+      </div>
+      <div class="chat-messages" id="chatMessages">
+        <div class="chat-message chat-message--system" data-i18n="chat.welcome">
+          Я — цифровой ассистент. Спросите, что вас волнует по оформлению ДТП.
+        </div>
+      </div>
+      <div class="chat-input-row">
+        <input
+          type="text"
+          id="chatInput"
+          class="chat-input"
+          placeholder="Напишите вопрос..."
+          data-i18n-placeholder="chat.placeholder"
+        />
+        <button class="btn-primary chat-send-btn" id="chatSendBtn">
+          →
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

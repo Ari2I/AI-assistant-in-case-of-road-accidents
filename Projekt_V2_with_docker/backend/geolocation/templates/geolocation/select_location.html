@@ -1,0 +1,322 @@
+{% extends 'accounts/profile.html' %}
+
+{% block content %}
+<div class="dtp-location-container">
+    <h2>📍 Отметьте место ДТП на карте</h2>
+    
+    <div class="map-wrapper">
+        <div id="map" class="map"></div>
+    </div>
+    
+    <div class="location-info">
+        <div class="form-group">
+            <label for="address">Адрес:</label>
+            <input type="text" id="address" class="form-control" readonly placeholder="Выберите точку на карте">
+        </div>
+        
+        <div class="form-group">
+            <label for="description">Описание (необязательно):</label>
+            <textarea id="description" class="form-control" rows="3" placeholder="Детали места происшествия"></textarea>
+        </div>
+        
+        <div class="coordinates-info">
+            <span>Координаты: </span>
+            <span id="coords">не выбраны</span>
+        </div>
+        
+        <div class="action-buttons">
+            <button id="saveBtn" class="btn btn-primary" disabled>
+                💾 Сохранить место ДТП
+            </button>
+            <a href="{% url 'geolocation:location_history' %}" class="btn btn-secondary">
+                📋 История мест
+            </a>
+        </div>
+        
+        <div id="message" class="message"></div>
+    </div>
+</div>
+
+<!-- Яндекс Карты API -->
+<script src="https://api-maps.yandex.ru/2.1/?apikey={{ YANDEX_GEOCODER_API_KEY }}&lang=ru_RU" type="text/javascript"></script>
+<script>
+    // Отладка: проверяем API ключ
+    console.log('YANDEX_GEOCODER_API_KEY:', '{{ YANDEX_GEOCODER_API_KEY }}');
+    
+    // Инициализация карты после загрузки API
+    ymaps.ready(initMap);
+    
+    let myMap;
+    let myPlacemark;
+    let selectedCoords = null;
+    let selectedAddress = null;
+    
+    function initMap() {
+        // Координаты по умолчанию (Москва)
+        const defaultCoords = [55.751244, 37.618423];
+        
+        myMap = new ymaps.Map('map', {
+            center: defaultCoords,
+            zoom: 10,
+            controls: ['zoomControl', 'geolocationControl']
+        });
+        
+        // Попытка получить текущую геолокацию пользователя
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(
+                function(position) {
+                    const userCoords = [position.coords.latitude, position.coords.longitude];
+                    myMap.setCenter(userCoords, 15);
+                    
+                    // Автоматически определяем адрес
+                    getAddressByCoords(userCoords[0], userCoords[1]);
+                },
+                function(error) {
+                    console.log('Геолокация недоступна:', error);
+                }
+            );
+        }
+        
+        // Обработчик клика по карте
+        myMap.events.add('click', function(e) {
+            const coords = e.get('coords');
+            placeMark(coords);
+            getAddressByCoords(coords[0], coords[1]);
+        });
+    }
+    
+    function placeMark(coords) {
+        // Удаляем существующую метку
+        if (myPlacemark) {
+            myMap.geoObjects.remove(myPlacemark);
+        }
+        
+        // Создаём новую метку
+        myPlacemark = new ymaps.Placemark(coords, {
+            hintContent: 'Место ДТП'
+        }, {
+            preset: 'islands#redCarIcon'
+        });
+        
+        myMap.geoObjects.add(myPlacemark);
+        selectedCoords = coords;
+        
+        // Обновляем отображение координат
+        document.getElementById('coords').textContent = 
+            coords[0].toFixed(6) + ', ' + coords[1].toFixed(6);
+        
+        // Активируем кнопку сохранения
+        document.getElementById('saveBtn').disabled = false;
+    }
+    
+    function getAddressByCoords(lat, lng) {
+        // Геокодирование через Яндекс JavaScript API (в браузере)
+        ymaps.geocode([lat, lng], {
+            lang: 'ru_RU'
+        }).then(function(res) {
+            // Берём первый (самый точный) результат
+            const geoObject = res.geoObjects.get(0);
+            if (geoObject) {
+                selectedAddress = geoObject.getAddressLine();
+                document.getElementById('address').value = selectedAddress;
+            } else {
+                document.getElementById('address').value = 'Адрес не определён';
+                selectedAddress = null;
+            }
+        }).catch(function(error) {
+            console.error('Ошибка геокодирования:', error);
+            document.getElementById('address').value = 'Ошибка определения адреса';
+        });
+    }
+    
+    // Сохранение места ДТП
+    document.getElementById('saveBtn').addEventListener('click', function() {
+        if (!selectedCoords || !selectedAddress) {
+            showMessage('⚠️ Сначала выберите место на карте', 'error');
+            return;
+        }
+        
+        const description = document.getElementById('description').value;
+        
+        fetch('{% url "geolocation:save_location" %}', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': getCookie('csrftoken')
+            },
+            body: JSON.stringify({
+                latitude: selectedCoords[0],
+                longitude: selectedCoords[1],
+                address: selectedAddress,
+                description: description
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                showMessage('✅ Место ДТП успешно сохранено!', 'success');
+                // Перенаправление на страницу истории через 1.5 секунды
+                setTimeout(() => {
+                    window.location.href = '{% url "geolocation:location_history" %}';
+                }, 1500);
+            } else {
+                showMessage('❌ Ошибка: ' + data.error, 'error');
+            }
+        })
+        .catch(error => {
+            console.error('Ошибка:', error);
+            showMessage('❌ Произошла ошибка при сохранении', 'error');
+        });
+    });
+    
+    // Функция для получения CSRF токена
+    function getCookie(name) {
+        let cookieValue = null;
+        if (document.cookie && document.cookie !== '') {
+            const cookies = document.cookie.split(';');
+            for (let i = 0; i < cookies.length; i++) {
+                const cookie = cookies[i].trim();
+                if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                    cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                    break;
+                }
+            }
+        }
+        return cookieValue;
+    }
+    
+    // Отображение сообщений
+    function showMessage(text, type) {
+        const messageEl = document.getElementById('message');
+        messageEl.textContent = text;
+        messageEl.className = 'message ' + type;
+        
+        setTimeout(() => {
+            messageEl.textContent = '';
+            messageEl.className = 'message';
+        }, 5000);
+    }
+</script>
+
+<style>
+    .dtp-location-container {
+        max-width: 900px;
+        margin: 0 auto;
+        padding: 20px;
+    }
+    
+    .dtp-location-container h2 {
+        margin-bottom: 20px;
+        color: #333;
+    }
+    
+    .map-wrapper {
+        margin-bottom: 20px;
+        border-radius: 8px;
+        overflow: hidden;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    
+    .map {
+        width: 100%;
+        height: 450px;
+    }
+    
+    .location-info {
+        background: #f8f9fa;
+        padding: 20px;
+        border-radius: 8px;
+    }
+    
+    .form-group {
+        margin-bottom: 15px;
+    }
+    
+    .form-group label {
+        display: block;
+        margin-bottom: 5px;
+        font-weight: 500;
+        color: #333;
+    }
+    
+    .form-control {
+        width: 100%;
+        padding: 10px 12px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        font-size: 14px;
+        box-sizing: border-box;
+    }
+    
+    .form-control[readonly] {
+        background-color: #e9ecef;
+    }
+    
+    .coordinates-info {
+        margin-bottom: 15px;
+        padding: 10px;
+        background: #fff;
+        border-radius: 4px;
+        font-family: monospace;
+        color: #666;
+    }
+    
+    .action-buttons {
+        display: flex;
+        gap: 10px;
+        margin-bottom: 15px;
+    }
+    
+    .btn {
+        padding: 10px 20px;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 14px;
+        text-decoration: none;
+        display: inline-block;
+        transition: background-color 0.2s;
+    }
+    
+    .btn-primary {
+        background-color: #007bff;
+        color: white;
+    }
+    
+    .btn-primary:hover:not(:disabled) {
+        background-color: #0056b3;
+    }
+    
+    .btn-primary:disabled {
+        background-color: #ccc;
+        cursor: not-allowed;
+    }
+    
+    .btn-secondary {
+        background-color: #6c757d;
+        color: white;
+    }
+    
+    .btn-secondary:hover {
+        background-color: #545b62;
+    }
+    
+    .message {
+        padding: 10px 15px;
+        border-radius: 4px;
+        font-weight: 500;
+    }
+    
+    .message.success {
+        background-color: #d4edda;
+        color: #155724;
+        border: 1px solid #c3e6cb;
+    }
+    
+    .message.error {
+        background-color: #f8d7da;
+        color: #721c24;
+        border: 1px solid #f5c6cb;
+    }
+</style>
+{% endblock %}

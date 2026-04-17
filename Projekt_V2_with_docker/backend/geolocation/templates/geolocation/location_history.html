@@ -1,0 +1,140 @@
+{% extends 'accounts/profile.html' %}
+
+{% block content %}
+<div class="location-history-container">
+    <h2>📋 История мест ДТП</h2>
+    
+    <div class="action-bar">
+        <a href="{% url 'geolocation:select_location' %}" class="btn btn-primary">
+            ➕ Добавить новое место
+        </a>
+    </div>
+    
+    {% if locations %}
+    <div class="locations-list">
+        <table class="locations-table">
+            <thead>
+                <tr>
+                    <th>Дата</th>
+                    <th>Адрес</th>
+                    <th>Координаты</th>
+                    <th>Описание</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for location in locations %}
+                <tr>
+                    <td>{{ location.created_at|date:"d.m.Y H:i" }}</td>
+                    <td>{{ location.address }}</td>
+                    <td>
+                        <a href="https://yandex.ru/maps/?pt={{ location.longitude }},{{ location.latitude }}&z=17" 
+                           target="_blank" class="coords-link">
+                            {{ location.latitude }}, {{ location.longitude }}
+                        </a>
+                    </td>
+                    <td>{{ location.description|default:"—" }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <p>📭 У вас пока нет сохранённых мест ДТП</p>
+        <a href="{% url 'geolocation:select_location' %}" class="btn btn-primary">
+            Отметить первое место
+        </a>
+    </div>
+    {% endif %}
+</div>
+
+<style>
+    .location-history-container {
+        max-width: 1000px;
+        margin: 0 auto;
+        padding: 20px;
+    }
+    
+    .location-history-container h2 {
+        margin-bottom: 20px;
+        color: #333;
+    }
+    
+    .action-bar {
+        margin-bottom: 20px;
+    }
+    
+    .locations-list {
+        background: #fff;
+        border-radius: 8px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        overflow: hidden;
+    }
+    
+    .locations-table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+    
+    .locations-table th,
+    .locations-table td {
+        padding: 12px 15px;
+        text-align: left;
+        border-bottom: 1px solid #eee;
+    }
+    
+    .locations-table th {
+        background-color: #f8f9fa;
+        font-weight: 600;
+        color: #333;
+    }
+    
+    .locations-table tr:hover {
+        background-color: #f8f9fa;
+    }
+    
+    .coords-link {
+        color: #007bff;
+        text-decoration: none;
+        font-family: monospace;
+    }
+    
+    .coords-link:hover {
+        text-decoration: underline;
+    }
+    
+    .empty-state {
+        text-align: center;
+        padding: 40px 20px;
+        background: #fff;
+        border-radius: 8px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    
+    .empty-state p {
+        font-size: 16px;
+        color: #666;
+        margin-bottom: 20px;
+    }
+    
+    .btn {
+        padding: 10px 20px;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 14px;
+        text-decoration: none;
+        display: inline-block;
+        transition: background-color 0.2s;
+    }
+    
+    .btn-primary {
+        background-color: #007bff;
+        color: white;
+    }
+    
+    .btn-primary:hover {
+        background-color: #0056b3;
+    }
+</style>
+{% endblock %}
