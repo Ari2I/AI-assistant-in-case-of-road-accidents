@@ -1,5 +1,5 @@
-from langchain_community.embeddings import GigaChatEmbeddings
-from langchain_community.vectorstores import Chroma
+from langchain_gigachat import GigaChatEmbeddings
+from langchain_chroma import Chroma
 
 from config import GIGA_AUTH
 

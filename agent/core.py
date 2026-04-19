@@ -37,15 +37,21 @@ def run_agent(query: str, history=None, db=None, feedback_db=None) -> dict:
     Returns:
         {"answer": "...", "source": "template" | "llm" | "filter" | "error"}
     """
-    # ШАГ 0: шаблонный ответ — без LLM
+    history_text = _build_history_text(history or [])
+
+    # ШАГ 0: Regex-whitelist — без LLM, мгновенно
     template_answer = match_template(query)
     if template_answer:
         return {"answer": template_answer, "source": "template"}
 
     try:
-        history_text = _build_history_text(history or [])
-
         with _make_giga() as giga:
+
+            # ШАГ 1: LLM-классификатор шаблонов (один вызов, дешевле полного pipeline)
+            # Передаём giga — теперь matcher использует его для классификации
+            template_answer = match_template(query, giga=giga, history_text=history_text)
+            if template_answer:
+                return {"answer": template_answer, "source": "template"}
 
             # ФИЛЬТР ТЕМЫ
             if not is_dtp_related(giga, query, history_text):

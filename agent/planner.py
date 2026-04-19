@@ -55,6 +55,7 @@ def build_plan(giga: GigaChat, query: str, history_text: str) -> dict[str, Any]:
         При ошибке парсинга возвращает _FALLBACK_PLAN.
     """
     prompt = _PROMPT_TEMPLATE.format(history=history_text, query=query)
+    text = ""
 
     try:
         response = giga.chat(prompt)
@@ -66,9 +67,6 @@ def build_plan(giga: GigaChat, query: str, history_text: str) -> dict[str, Any]:
 
         return json.loads(match.group(0))
 
-
     except (json.JSONDecodeError, AttributeError, IndexError, ValueError) as e:
-
-        print(f"[self_check] parse error: {e}\nraw response: {text[:200]}")
-
-        return "BAD", 0.0, "parse error", answer
+        print(f"[planner] parse error: {e}\nraw response: {text[:200]}")
+        return _FALLBACK_PLAN
