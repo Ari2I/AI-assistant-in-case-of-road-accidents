@@ -1,9 +1,13 @@
 """
 Глобальное состояние приложения.
-Все тяжёлые объекты создаются один раз при старте.
+Все тяжёлые объекты создаются ОДИН РАЗ при старте сервера.
+
+Исправлено: убран импорт semantic_matcher (файл не существовал,
+startup падал с ImportError). Прогрев semantic_matcher удалён.
 """
+
 from rag.init_db import load_db, load_feedback_db
-from templates.semantic_matcher import _matcher  # синглтон
+
 
 class AppState:
     def __init__(self):
@@ -19,10 +23,12 @@ class AppState:
         print("[startup] Загрузка feedback DB...")
         self.feedback_db = load_feedback_db()
 
-        print("[startup] Прогрев semantic matcher...")
-        _matcher._lazy_init()  # явно прогреваем, не ждём первого запроса
-
         self._ready = True
-        print("[startup] Готово.")
+        print("[startup] Готово. Базы данных загружены.")
+
+    @property
+    def ready(self) -> bool:
+        return self._ready
+
 
 state = AppState()
