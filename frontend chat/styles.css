@@ -247,10 +247,10 @@ body {
   border-radius: 50%;
   background: var(--accent);
   opacity: 0.4;
-  animation: pulse 2s infinite;
+  animation: avatarPulse 2s infinite;
 }
 
-@keyframes pulse {
+@keyframes avatarPulse {
   0% {
     transform: scale(1);
     opacity: 0.4;
@@ -788,4 +788,493 @@ body {
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--accent);
+}
+
+/* Toast уведомления */
+.toast {
+  position: fixed;
+  bottom: 100px;
+  left: 50%;
+  transform: translateX(-50%) translateY(100px);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  padding: 12px 20px;
+  border-radius: var(--radius-xl);
+  font-size: 14px;
+  z-index: 2000;
+  opacity: 0;
+  transition: all 0.3s ease;
+  box-shadow: var(--shadow-lg);
+  border: 1px solid var(--border);
+  pointer-events: none;
+}
+
+.toast--show {
+  transform: translateX(-50%) translateY(0);
+  opacity: 1;
+}
+
+.toast--success {
+  border-left: 3px solid var(--success);
+}
+
+.toast--warning {
+  border-left: 3px solid var(--warning);
+}
+
+.toast--error {
+  border-left: 3px solid var(--danger);
+}
+
+/* Code styling */
+.message-bubble code {
+  background: var(--surface-light);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  font-family: monospace;
+  font-size: 0.9em;
+  color: var(--accent-light);
+}
+
+/* Скрываем горизонтальный скролл у quick-actions */
+.quick-actions {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.quick-actions::-webkit-scrollbar {
+  display: none;
+}
+
+/* Наследование шрифта */
+input, button, textarea, select {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+/* Focus visible */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* Safe area для iOS */
+.chat-input-area {
+  padding-bottom: max(16px, env(safe-area-inset-bottom));
+}
+
+/* Сайдбар оверлей */
+.sidebar-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 150;
+  display: none;
+  backdrop-filter: blur(4px);
+  transition: opacity 0.3s ease;
+}
+
+.sidebar-overlay--visible {
+  display: block;
+  animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Улучшенная история чатов */
+.chat-history {
+  flex: 1;
+  padding: 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.history-item {
+  padding: 12px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: var(--transition);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0;
+  background: transparent;
+}
+
+.history-item:hover {
+  background: var(--surface);
+}
+
+.history-item--active {
+  background: var(--surface);
+  border-left: 3px solid var(--accent);
+}
+
+.history-date {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* Адаптация textarea вместо input */
+.chat-input {
+  flex: 1;
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  font-size: 14px;
+  padding: 8px 0;
+  outline: none;
+  resize: none;
+  max-height: 120px;
+  overflow-y: auto;
+  font-family: inherit;
+  line-height: 1.4;
+}
+
+.chat-input::-webkit-scrollbar {
+  width: 4px;
+}
+
+.chat-input::-webkit-scrollbar-track {
+  background: var(--surface);
+  border-radius: 2px;
+}
+
+.chat-input::-webkit-scrollbar-thumb {
+  background: var(--surface-light);
+  border-radius: 2px;
+}
+
+/* Улучшенные emergency cards */
+.emergency-card {
+  flex: 1;
+  padding: 20px;
+  background: var(--surface);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: var(--transition);
+  text-align: center;
+}
+
+.emergency-card:hover,
+.emergency-card:focus-visible {
+  background: var(--surface-light);
+  transform: translateY(-2px);
+}
+
+/* Aria labels для иконочных кнопок */
+.header-action-btn,
+.mobile-menu-btn,
+.profile-icon-btn,
+.attach-btn,
+.send-btn,
+.chat-send-btn {
+  position: relative;
+}
+
+/* Добавляем fallback для браузеров без dvh */
+@supports not (height: 100dvh) {
+  body, .chat-container {
+    height: 100vh;
+  }
+}
+
+/* Улучшенная читаемость кода */
+.message-bubble code {
+  background: var(--surface-light);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  font-family: 'Courier New', monospace;
+  font-size: 0.85em;
+  color: var(--accent-light);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Анимация для новых сообщений */
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.message {
+  animation: slideIn 0.3s ease;
+}
+
+/* Стили для disabled состояния */
+button:disabled,
+button.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* Улучшенный скролл для messages area */
+.chat-messages-area::-webkit-scrollbar {
+  width: 6px;
+}
+
+.chat-messages-area::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chat-messages-area::-webkit-scrollbar-thumb {
+  background: var(--surface-light);
+  border-radius: 3px;
+}
+
+.chat-messages-area::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
+}
+
+/* Стили для markdown списков */
+.message-bubble ul,
+.message-bubble ol {
+  margin: 8px 0;
+  padding-left: 20px;
+}
+
+.message-bubble li {
+  margin: 4px 0;
+  line-height: 1.5;
+}
+
+/* Стили для выделения текста */
+.message-bubble strong {
+  color: var(--accent-light);
+  font-weight: 600;
+}
+
+/* Улучшенная модалка на мобильных */
+@media (max-width: 768px) {
+  .modal-content {
+    width: 95%;
+    max-height: 85vh;
+  }
+  
+  .emergency-numbers {
+    flex-direction: column;
+    gap: 12px;
+  }
+  
+  .upload-buttons {
+    flex-direction: column;
+  }
+  
+  .photo-preview-list {
+    justify-content: center;
+  }
+  
+  .photo-preview {
+    width: 70px;
+    height: 70px;
+  }
+}
+
+/* Тёмная тема (автоматическая) */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg-primary: #0a0a0f;
+    --bg-secondary: #1a1a2e;
+    --surface: #1e1e2e;
+    --surface-light: #2a2a3a;
+    --text-primary: #ffffff;
+    --text-secondary: #a0a0b0;
+    --text-muted: #6c6c7a;
+    --border: #2a2a3a;
+  }
+}
+
+/* Светлая тема (опционально, для тех кто не хочет тёмную) */
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg-primary: #f5f7fb;
+    --bg-secondary: #ffffff;
+    --surface: #f8f9fa;
+    --surface-light: #e9ecef;
+    --text-primary: #1a1a2e;
+    --text-secondary: #4a4a5a;
+    --text-muted: #6c6c7a;
+    --border: #e9ecef;
+  }
+  
+  .message-bubble {
+    box-shadow: var(--shadow-sm);
+  }
+  
+  .message--assistant .message-bubble {
+    background: var(--surface);
+  }
+  
+  .message--user .message-bubble {
+    background: var(--accent);
+  }
+}
+
+/* Индикатор новых сообщений */
+.new-message-indicator {
+  position: absolute;
+  bottom: 80px;
+  right: 20px;
+  background: var(--accent);
+  color: white;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: var(--shadow-lg);
+  animation: bounce 1s infinite;
+  z-index: 90;
+}
+
+@keyframes bounce {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-5px);
+  }
+}
+
+
+@keyframes pulse {
+  0% {
+    opacity: 0.4;
+    transform: scale(0.8);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1.2);
+  }
+}
+
+/* Улучшенные быстрые действия на мобильных */
+@media (max-width: 768px) {
+  .quick-actions {
+    gap: 8px;
+    padding: 12px 16px;
+  }
+  
+  .quick-action-chip {
+    font-size: 12px;
+    padding: 6px 12px;
+    white-space: nowrap;
+  }
+}
+
+/* Превью фото в модалке */
+.photo-preview-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.photo-preview {
+  width: 80px;
+  height: 80px;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  border: 2px solid var(--border);
+  transition: var(--transition);
+}
+
+.photo-preview:hover {
+  transform: scale(1.05);
+  border-color: var(--accent);
+}
+
+/* Стили для формы профиля */
+.profile-form .form-field input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+/* Анимация для модалок */
+@keyframes modalSlideIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95) translateY(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.modal--visible .modal-content {
+  animation: modalSlideIn 0.3s ease;
+}
+
+/* Стили для ссылок в сообщениях */
+.message-bubble a {
+  color: var(--accent-light);
+  text-decoration: none;
+  border-bottom: 1px dashed var(--accent-light);
+}
+
+.message-bubble a:hover {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* Индикатор загрузки файлов */
+.upload-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.upload-loading::after {
+  content: '';
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Отображение ошибок в форме */
+.form-field.error input {
+  border-color: var(--danger);
+}
+
+.form-field .error-message {
+  font-size: 11px;
+  color: var(--danger);
+  margin-top: 4px;
 }
