@@ -1,0 +1,127 @@
+"""
+Мета-классификатор v2 — исправлены границы категорий,
+добавлен keyword-override до LLM-вызова.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+
+from gigachat import GigaChat
+
+_CATEGORIES = {
+    "first_steps": (
+        "Пользователь только что попал в ДТП, ещё на месте, не знает с чего начать. "
+        "Примеры: 'попал в ДТП', 'что делать', 'авария произошла'. "
+        "НЕ входит: вопросы о документах, страховой, заполнении бланков."
+    ),
+    "europrotocol_possible": (
+        "Вопросы о том, КАК оформить ДТП без ГИБДД: условия, приложения, фотофиксация, лимиты. "
+        "Примеры: 'можно ли без ГИБДД', 'какое приложение скачать', 'как сфотографировать'. "
+        "НЕ входит: заполнение конкретных пунктов бланка, отправка в страховую."
+    ),
+    "europrotocol_impossible": (
+        "ДТП, при котором нужна полиция: пострадавшие, 3+ участника, нет ОСАГО, скрылся водитель. "
+        "Примеры: 'есть раненые', 'второй уехал', 'нет страховки'."
+    ),
+    "filling_europrotocol": (
+        "Заполнение бланка извещения НА МЕСТЕ ДТП: конкретные пункты 1-18, схема, повреждения, ошибки. "
+        "Примеры: 'что писать в пункте 10', 'как нарисовать схему', 'допустил ошибку в бланке'. "
+        "НЕ входит: отправка документов в страховую — это insurance_communication."
+    ),
+    "insurance_communication": (
+        "Взаимодействие со страховой ПОСЛЕ оформления: какие документы подать, куда отправить, "
+        "сроки, выплаты, споры, прямое возмещение, проверка полиса, КБМ. "
+        "Примеры: 'какие документы отправить в страховую', 'куда подавать заявление', "
+        "'когда придёт выплата', 'страховая отказала'. "
+        "ВАЖНО: любой вопрос про отправку/подачу документов — ЭТА категория."
+    ),
+}
+
+# Жёсткие override-правила: если слово найдено в запросе — LLM не вызывается
+_KEYWORD_OVERRIDES: list[tuple[list[str], str, int]] = [
+    (
+        ["страховую", "страховой", "страховая", "страховщик",
+         "заявление о", "выплат", "возмещен",
+         "подать документы", "отправить документы", "какие документы"],
+        "insurance_communication",
+        9,
+    ),
+    (
+        ["пострадавш", "ранен", "сбил пешехода",
+         "скрылся", "уехал с места",
+         "три машин", "нет осаго", "нет страховки"],
+        "europrotocol_impossible",
+        0,
+    ),
+]
+
+_PROMPT = """\
+Определи категорию вопроса пользователя.
+
+История диалога:
+{history}
+
+Сообщение пользователя: "{query}"
+
+Категории (читай примеры и границы):
+{categories}
+
+Номер блока алгоритма (0-9):
+0=безопасность, 1=аварийка/знак, 2=пострадавшие, 3=участники,
+4=ОСАГО, 5=разногласия, 6=фиксация, 7=заполнение бланка на месте,
+8=фотофиксация, 9=действия после оформления и отправка в страховую
+
+Верни ТОЛЬКО валидный JSON:
+{{"relevant": true/false, "category": "ключ_категории", "block": число}}
+"""
+
+
+def meta_classify(
+    giga: GigaChat,
+    query: str,
+    history_text: str = "",
+) -> dict:
+    fallback = {"relevant": True, "category": "first_steps", "block": 0}
+
+    # Keyword override — быстро, без LLM
+    query_lower = query.lower()
+    for keywords, forced_category, forced_block in _KEYWORD_OVERRIDES:
+        if any(kw in query_lower for kw in keywords):
+            return {
+                "relevant": True,
+                "category": forced_category,
+                "block": forced_block,
+            }
+
+    categories_text = "\n".join(
+        f'"{k}": {v}' for k, v in _CATEGORIES.items()
+    )
+    prompt = _PROMPT.format(
+        history=history_text or "(начало диалога)",
+        query=query,
+        categories=categories_text,
+    )
+
+    try:
+        resp = giga.chat(prompt)
+        text = resp.choices[0].message.content.strip()
+        m = re.search(r"\{.*\}", text, re.DOTALL)
+        if not m:
+            return fallback
+
+        data = json.loads(m.group(0))
+        category = data.get("category", "first_steps")
+        if category not in _CATEGORIES:
+            category = "first_steps"
+
+        return {
+            "relevant": bool(data.get("relevant", True)),
+            "category": category,
+            "block": int(data.get("block", 0)),
+        }
+
+    except Exception as e:
+        print(f"[meta_classifier] error: {e}")
+        return fallback
