@@ -268,6 +268,390 @@ function deleteChat(chatId) {
   showToast('Чат удалён', 'info');
 }
 
+// ==========================
+// СХЕМА ДТП (Яндекс.Карты)
+// ==========================
+const diagramModal = document.getElementById('diagramModal');
+const saveDiagramBtn = document.getElementById('saveDiagramBtn');
+const clearDiagramBtn = document.getElementById('clearDiagramBtn');
+let diagramMap = null;
+let diagramMarkers = { carA: null, carB: null };
+// Оверлей для рисования и состояние
+let diagramOverlay = null;
+let isDrawMode = false;
+let currentRectId = 0;
+let shapes = []; // { id, x, y, w, h, rot, label, geo }
+
+function ensureOverlay() {
+  if (diagramOverlay) return diagramOverlay;
+  const mapEl = document.getElementById('diagramMap');
+  if (!mapEl) return null;
+  // Добавляем оверлей прямо в контейнер карты. НЕ перемещаем и не оборачиваем внутренности карты.
+  // Убедимся, что контейнер карты позиционирован, чтобы абсолютные дочерние элементы располагались корректно.
+  mapEl.style.position = mapEl.style.position || 'relative';
+  const overlay = document.createElement('div');
+  overlay.className = 'diagram-overlay';
+  overlay.style.position = 'absolute';
+  overlay.style.top = '0';
+  overlay.style.left = '0';
+  overlay.style.right = '0';
+  overlay.style.bottom = '0';
+  // start hidden so it doesn't cover the map when not in draw mode
+  overlay.style.display = 'none';
+  mapEl.appendChild(overlay);
+  diagramOverlay = overlay;
+  return diagramOverlay;
+}
+
+function toggleDrawMode(enable) {
+  isDrawMode = typeof enable === 'boolean' ? enable : !isDrawMode;
+  const overlay = ensureOverlay();
+  if (!overlay) return;
+  // show/hide overlay so it does not physically cover the map when not drawing
+  if (isDrawMode) {
+  // Специально не пытаемся делать снимок живой карты (html2canvas)
+  // из-за проблем с CORS/tainted-canvas. Вместо этого используем полупрозрачный
+  // оверлей — пользователь может ставить и редактировать фигуры, не взаимодействуя
+  // с самой картой. При необходимости это можно заменить серверным изображением.
+    overlay.style.backgroundImage = '';
+    overlay.classList.remove('snapshot');
+    overlay.style.display = 'block';
+    overlay.classList.add('draw-mode');
+  // Мы не вызываем diagramMap.behaviors.disable(), так как в некоторых сборках
+  // поведение карты может быть недоступно. Оверлей перехватывает события указателя
+  // и предотвращает взаимодействие с картой под ним.
+
+  // При входе в режим рисования превращаем существующие маркеры в перетаскиваемые прямоугольники
+    shapes = [];
+  // создаём прямоугольники в позициях маркеров на экране
+    const overlayRect = overlay.getBoundingClientRect();
+    function addRectForPlacemark(placemark, label) {
+      if (!placemark) return;
+      try {
+        const coords = placemark.geometry.getCoordinates();
+  // конвертируем lat/lon в глобальные координаты страницы
+  const pagePoint = diagramMap.converter.globalToPage(coords);
+  // pagePoint — [x, y] относительно страницы; вычисляем относительно оверлея
+        const x = pagePoint[0] - overlayRect.left;
+        const y = pagePoint[1] - overlayRect.top;
+        const el = addRectangleAt(x, y, 120, 60, 0, label);
+        const id = parseInt(el.dataset.id);
+  // сохраняем заглушку geo — она будет заполнена при сохранении
+        const shape = shapes.find(s => s.id === id);
+        if (shape) shape.geo = coords;
+      } catch (err) {
+        console.warn('Не удалось проецировать метку в координаты страницы', err);
+      }
+    }
+    addRectForPlacemark(diagramMarkers.carA, 'Авто A');
+    addRectForPlacemark(diagramMarkers.carB, 'Авто B');
+  showToast('Режим рисования включён — переместите и вращайте авто-маркеры при необходимости', 'info');
+
+  // разрешаем клик по оверлею для добавления объектов-авто
+    overlay.addEventListener('click', onOverlayClickToAddCar);
+  } else {
+  overlay.classList.remove('draw-mode');
+  overlay.style.display = 'none';
+  overlay.classList.remove('snapshot');
+  overlay.style.backgroundImage = '';
+  // удаляем обработчик клика, добавленный в режиме рисования
+    overlay.removeEventListener('click', onOverlayClickToAddCar);
+    // No need to re-enable behaviors; overlay removal restores interaction.
+    showToast('Режим рисования выключён', 'info');
+  }
+}
+
+function onOverlayClickToAddCar(e) {
+  // ignore if click on an existing control/shape
+  if (e.target !== e.currentTarget) return;
+  const overlay = diagramOverlay;
+  if (!overlay) return;
+  const rect = overlay.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+  // create a car element
+  const id = ++currentRectId;
+  const car = document.createElement('div');
+  car.className = 'diagram-car';
+  car.style.left = (x - 22) + 'px';
+  car.style.top = (y - 14) + 'px';
+  car.dataset.id = id;
+  overlay.appendChild(car);
+  // make draggable/rotatable (reuse handle by creating a small invisible handle)
+  const handle = document.createElement('div');
+  handle.style.width = '100%';
+  handle.style.height = '100%';
+  handle.style.position = 'absolute';
+  handle.style.top = '0';
+  handle.style.left = '0';
+  handle.style.cursor = 'move';
+  handle.style.background = 'transparent';
+  car.appendChild(handle);
+  makeDraggableAndRotatable(car, handle);
+  shapes.push({ id, x, y, w: 44, h: 28, rot: 0, label: 'Авто', geo: null });
+}
+
+function addRectangleAt(x, y, w = 120, h = 60, rot = 0, label = 'Прямоугольник') {
+  const overlay = ensureOverlay();
+  if (!overlay) return null;
+  const id = ++currentRectId;
+  const rect = document.createElement('div');
+  rect.className = 'diagram-rect';
+  rect.style.left = (x - w / 2) + 'px';
+  rect.style.top = (y - h / 2) + 'px';
+  rect.style.width = w + 'px';
+  rect.style.height = h + 'px';
+  rect.style.transform = `rotate(${rot}deg)`;
+  rect.dataset.id = id;
+
+  const rotateHandle = document.createElement('div');
+  rotateHandle.className = 'rotate-handle';
+  rect.appendChild(rotateHandle);
+
+  const lbl = document.createElement('div');
+  lbl.className = 'label';
+  lbl.textContent = label;
+  rect.appendChild(lbl);
+
+  overlay.appendChild(rect);
+
+  // Make draggable
+  makeDraggableAndRotatable(rect, rotateHandle);
+
+  shapes.push({ id, x, y, w, h, rot, label, geo: null });
+  return rect;
+}
+
+function makeDraggableAndRotatable(el, handle) {
+  let isDragging = false;
+  let isRotating = false;
+  let startX = 0, startY = 0;
+  let startLeft = 0, startTop = 0;
+  let startAngle = 0;
+
+  el.addEventListener('pointerdown', (e) => {
+    if (!isDrawMode) return;
+    if (e.target === handle) {
+      isRotating = true;
+      startX = e.clientX;
+      startY = e.clientY;
+      const transform = getComputedStyle(el).transform;
+      // extract rotation
+      let angle = 0;
+      if (transform && transform !== 'none') {
+        const values = transform.split('(')[1].split(')')[0].split(',');
+        const a = parseFloat(values[0]);
+        const b = parseFloat(values[1]);
+        angle = Math.atan2(b, a) * (180 / Math.PI);
+      }
+      startAngle = angle;
+      el.setPointerCapture(e.pointerId);
+    } else {
+      isDragging = true;
+      startX = e.clientX;
+      startY = e.clientY;
+      startLeft = parseFloat(el.style.left || 0);
+      startTop = parseFloat(el.style.top || 0);
+      el.setPointerCapture(e.pointerId);
+    }
+  });
+
+  el.addEventListener('pointermove', (e) => {
+    if (!isDrawMode) return;
+    if (isDragging) {
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      el.style.left = (startLeft + dx) + 'px';
+      el.style.top = (startTop + dy) + 'px';
+    }
+    if (isRotating) {
+      const rect = el.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      const angle = Math.atan2(e.clientY - cy, e.clientX - cx) * 180 / Math.PI;
+      el.style.transform = `rotate(${angle}deg)`;
+    }
+  });
+
+  el.addEventListener('pointerup', (e) => {
+    isDragging = false;
+    isRotating = false;
+    try { el.releasePointerCapture(e.pointerId); } catch (er) {}
+    // update shapes model
+    const id = parseInt(el.dataset.id);
+    const rect = el.getBoundingClientRect();
+    const overlayRect = el.parentElement.getBoundingClientRect();
+    const x = rect.left - overlayRect.left + rect.width / 2;
+    const y = rect.top - overlayRect.top + rect.height / 2;
+    const w = rect.width;
+    const h = rect.height;
+    const transform = getComputedStyle(el).transform;
+    let angle = 0;
+    if (transform && transform !== 'none') {
+      const values = transform.split('(')[1].split(')')[0].split(',');
+      const a = parseFloat(values[0]);
+      const b = parseFloat(values[1]);
+      angle = Math.atan2(b, a) * (180 / Math.PI);
+    }
+    const shape = shapes.find(s => s.id === id);
+    if (shape) {
+      shape.x = x; shape.y = y; shape.w = w; shape.h = h; shape.rot = angle;
+    }
+  });
+}
+
+
+function initDiagramMap() {
+  // Если API не загружен — ничего не делаем (скрипт подключён с defer)
+  if (!window.ymaps) return;
+
+  if (diagramMap) return;
+
+  ymaps.ready(() => {
+    try {
+      diagramMap = new ymaps.Map('diagramMap', {
+        center: [55.76, 37.64], // Москва по умолчанию
+        zoom: 14,
+        controls: ['zoomControl']
+      });
+
+      // Добавляем обработчик клика по карте — ставим маркеры по очереди
+      diagramMap.events.add('click', function (e) {
+        const coords = e.get('coords');
+        // Если нет маркера carA — ставим его, иначе ставим carB
+        if (!diagramMarkers.carA) {
+          const placemark = new ymaps.Placemark(coords, { hintContent: 'Автомобиль A' }, { preset: 'islands#redVehicleIcon' });
+          diagramMap.geoObjects.add(placemark);
+          diagramMarkers.carA = placemark;
+        } else if (!diagramMarkers.carB) {
+          const placemark = new ymaps.Placemark(coords, { hintContent: 'Автомобиль B' }, { preset: 'islands#blueVehicleIcon' });
+          diagramMap.geoObjects.add(placemark);
+          diagramMarkers.carB = placemark;
+        } else {
+          // Если оба маркера выставлены — заменяем ближайший
+          const distA = ymaps.coordSystem.geo.getDistance(diagramMarkers.carA.geometry.getCoordinates(), coords);
+          const distB = ymaps.coordSystem.geo.getDistance(diagramMarkers.carB.geometry.getCoordinates(), coords);
+          const replaceKey = distA < distB ? 'carA' : 'carB';
+          const newPlacemark = new ymaps.Placemark(coords, { hintContent: replaceKey === 'carA' ? 'Автомобиль A' : 'Автомобиль B' }, { preset: replaceKey === 'carA' ? 'islands#redVehicleIcon' : 'islands#blueVehicleIcon' });
+          diagramMap.geoObjects.remove(diagramMarkers[replaceKey]);
+          diagramMap.geoObjects.add(newPlacemark);
+          diagramMarkers[replaceKey] = newPlacemark;
+        }
+      });
+      // Ensure converter exists (some ymaps builds expose converter on Map)
+      if (!diagramMap.converter && ymaps.layout) {
+        // nothing to do, converter should exist after render
+      }
+    } catch (err) {
+      console.error('Diagram map init error', err);
+    }
+  });
+}
+
+function openDiagramModal() {
+  if (diagramModal) diagramModal.classList.add('modal--visible');
+  // Инициализация карты (попробуем через несколько сотен мс если API ещё не готов)
+  setTimeout(() => {
+    initDiagramMap();
+    // ensure overlay exists for drawing
+    ensureOverlay();
+    // If euroData already has diagram coords (from previous save), restore markers
+    try {
+      if (euroData && euroData.diagram) {
+        const d = euroData.diagram;
+        if (d.carA && d.carA.length === 2) {
+          if (!diagramMarkers.carA) {
+            const placemark = new ymaps.Placemark(d.carA, { hintContent: 'Автомобиль A' }, { preset: 'islands#redVehicleIcon' });
+            diagramMap.geoObjects.add(placemark);
+            diagramMarkers.carA = placemark;
+          } else {
+            diagramMarkers.carA.geometry.setCoordinates(d.carA);
+          }
+        }
+        if (d.carB && d.carB.length === 2) {
+          if (!diagramMarkers.carB) {
+            const placemark = new ymaps.Placemark(d.carB, { hintContent: 'Автомобиль B' }, { preset: 'islands#blueVehicleIcon' });
+            diagramMap.geoObjects.add(placemark);
+            diagramMarkers.carB = placemark;
+          } else {
+            diagramMarkers.carB.geometry.setCoordinates(d.carB);
+          }
+        }
+      }
+    } catch (err) {
+      // ignore restore errors
+    }
+  }, 200);
+}
+
+function clearDiagram() {
+  // clear map and overlay shapes
+  if (!diagramMap) {
+    diagramMarkers = { carA: null, carB: null };
+    const mapEl = document.getElementById('diagramMap');
+    if (mapEl) mapEl.innerHTML = '';
+  } else {
+    diagramMap.geoObjects.removeAll();
+    diagramMarkers = { carA: null, carB: null };
+  }
+  // remove overlay rectangles
+  if (diagramOverlay) {
+    diagramOverlay.innerHTML = '';
+    shapes = [];
+    currentRectId = 0;
+  }
+}
+
+function saveDiagram() {
+  // Сохраняем координаты в euroData и в историю чата как заметку
+  const carAPos = diagramMarkers.carA ? diagramMarkers.carA.geometry.getCoordinates() : null;
+  const carBPos = diagramMarkers.carB ? diagramMarkers.carB.geometry.getCoordinates() : null;
+
+  // Convert shapes' pixel centers to geo coordinates (lat, lon)
+  const overlay = ensureOverlay();
+  const overlayRect = overlay ? overlay.getBoundingClientRect() : null;
+  const convertedShapes = shapes.map(s => {
+    // try rectangle element first, then car element
+    let el = document.querySelector(`.diagram-rect[data-id="${s.id}"]`);
+    let isCar = false;
+    if (!el) {
+      el = document.querySelector(`.diagram-car[data-id="${s.id}"]`);
+      if (el) isCar = true;
+    }
+    if (!el || !diagramMap || !overlayRect) return Object.assign({}, s);
+    const rect = el.getBoundingClientRect();
+    const centerX = rect.left - overlayRect.left + rect.width / 2;
+    const centerY = rect.top - overlayRect.top + rect.height / 2;
+    // page coords expected by converter: [x, y]
+    try {
+      const pageX = overlayRect.left + centerX;
+      const pageY = overlayRect.top + centerY;
+      const geo = diagramMap.converter.pageToGlobal([pageX, pageY]);
+      // for cars, save type
+      const base = Object.assign({}, s, { geo });
+      if (isCar) base.type = 'car';
+      return base;
+    } catch (err) {
+      console.warn('Failed to convert page to geo', err);
+      return Object.assign({}, s);
+    }
+  });
+
+  euroData.diagram = {
+    carA: carAPos,
+    carB: carBPos,
+    shapes: convertedShapes,
+    timestamp: new Date().toISOString()
+  };
+
+  // Добавляем сообщение в чат с кратким описанием и ссылкой на координаты
+  const summary = `Схема ДТП сохранена. A: ${carAPos ? carAPos.map(c => c.toFixed(5)).join(',') : 'не указано'}; B: ${carBPos ? carBPos.map(c => c.toFixed(5)).join(',') : 'не указано'}`;
+  addMessageToUI(summary, 'assistant', true);
+  showToast('Схема сохранена', 'success');
+  closeAllModals();
+}
+
+
 // Добавляем кнопку удаления чата (опционально, при наведении на элемент истории)
 function addDeleteButtonToHistory() {
   // Можно добавить долгое нажатие или иконку корзины
@@ -788,6 +1172,10 @@ quickActionChips.forEach(chip => {
   chip.addEventListener('click', () => {
     const action = chip.dataset.action;
     switch (action) {
+      case 'diagram':
+        queueAssistantResponse(t('photo_guide'));
+        setTimeout(() => openDiagramModal(), 500);
+        break;
       case 'euro':
         startEuroprotocol();
         break;
@@ -901,6 +1289,18 @@ function setupEmergencyCalls() {
 modalCloses.forEach(btn => {
   btn.addEventListener('click', closeAllModals);
 });
+
+// Слушатели для схемы ДТП
+if (saveDiagramBtn) saveDiagramBtn.addEventListener('click', saveDiagram);
+if (clearDiagramBtn) clearDiagramBtn.addEventListener('click', () => {
+  clearDiagram();
+  showToast('Схема очищена', 'info');
+});
+
+// Draw mode control (toggle only)
+const toggleDrawBtn = document.getElementById('toggleDrawBtn');
+
+if (toggleDrawBtn) toggleDrawBtn.addEventListener('click', () => toggleDrawMode());
 
 document.querySelectorAll('.modal').forEach(modal => {
   modal.addEventListener('click', (e) => {
