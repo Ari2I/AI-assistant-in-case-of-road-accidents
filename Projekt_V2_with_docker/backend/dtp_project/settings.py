@@ -32,7 +32,7 @@ DEBUG = True
 
 # ALLOWED_HOSTS = ['ваш_логин.pythonanywhere.com', 'localhost', '127.0.0.1']
 # ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', '*').split(',') # Для локального запуска через docker
-ALLOWED_HOSTS = ['ваш_ip', 'ваш_домен.ru']
+ALLOWED_HOSTS = ['ваш_ip', 'ваш_домен.ru', 'localhost', '127.0.0.1']
 
 
 # Application definition

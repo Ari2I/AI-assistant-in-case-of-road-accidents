@@ -6,7 +6,7 @@ from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_community.vectorstores import Chroma
+from langchain_chroma import Chroma
 from langchain_community.document_loaders import DirectoryLoader, UnstructuredMarkdownLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from gigachat import GigaChat
@@ -125,8 +125,10 @@ def ask_dtp_assistant(query, history=None):
         messages.append({"role": "user", "content": query})
         
         # 4. Запрос к модели
+        # в функции ask_dtp_assistant замените:
         payload = {
             "messages": messages,
+            "model": "GigaChat",  # или GigaChat-Pro, GigaChat-Plus
             "temperature": 0.1
         }
         response = giga.chat(payload)

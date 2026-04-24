@@ -6,3 +6,4 @@ sentence-transformers
 unstructured[md]
 langchain-text-splitters
 python-dotenv
+langchain_chroma
