@@ -1,9 +1,17 @@
-langchain-community
-langchain-huggingface
-chromadb
-gigachat
-sentence-transformers
-unstructured[md]
-langchain-text-splitters
-python-dotenv
-langchain_chroma
+# ДТП-ассистент — зависимости
+# Python 3.10+
+ 
+# --- GigaChat ---
+gigachat>=0.1.35                  # прямой клиент: GigaChat, Chat, Messages
+langchain-gigachat>=0.3.0         # эмбеддинги: GigaChatEmbeddings (build_db, init_db)
+ 
+# --- LangChain ---
+langchain-community>=0.2.0        # DirectoryLoader, TextLoader (build_db)
+langchain-chroma>=0.1.0           # Chroma vector store (init_db)
+langchain-text-splitters>=0.2.0   # RecursiveCharacterTextSplitter (build_db)
+ 
+# --- Vector DB ---
+chromadb>=0.5.0                   # ChromaDB (используется через langchain-chroma)
+ 
+# --- Конфигурация ---
+python-dotenv>=1.0.0              # load_dotenv, os.getenv (config.py)
