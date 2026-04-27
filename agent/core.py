@@ -1,14 +1,18 @@
 """
-Pipeline v4.0 — оптимизированный по токенам.
+Pipeline v5.0 — с машиной состояний и Function Calling.
+Изменения vs v4.0:
+  - Добавлена машина состояний (dialog_flow.py) для детерминированного сбора фактов
+  - Function Calling (gigachat_client.py) для надёжного извлечения фактов
+  - Состояние диалога передаётся между вызовами run_agent()
 
-Изменения vs v3.0:
-  - filter + classifier + planner → один вызов (meta_classifier)
-  - генератор получает только нужный блок алгоритма, не весь (~400 вместо ~3000 токенов)
-  - self_check запускается только если ответ содержит маркеры неуверенности
-
-Было: до 5 LLM-вызовов, ~10 000 токенов
-Стало: 2-3 LLM-вызова, ~4 000-5 000 токенов
+Было: LLM управляет переходами между шагами (непредсказуемо)
+Стало: явная машина состояний + LLM для категории ответа
 """
+
+from __future__ import annotations
+
+import logging
+from typing import Any
 
 from gigachat import GigaChat
 
@@ -22,6 +26,22 @@ from evaluation.self_check import improve_answer
 from evaluation.critic import critic_rate_answer
 from rag.feedback_db import save_good_qa
 from templates.matcher import match_template
+from services.dialog_flow import (
+    AIConversationState,
+    AIConversationFacts,
+    create_initial_state,
+    apply_facts_and_advance_step,
+    build_known_facts_summary,
+    is_terminal_step,
+    STEP_READY_EUROPROTOCOL,
+    STEP_POLICE_REQUIRED,
+    STEP_SPECIAL_CASE,
+)
+from services.gigachat_client import extract_accident_facts
+from services.salutespeech_client import transcribe_audio, synthesize_audio
+from utils.audio_utils import normalize_audio_for_salutespeech
+
+logger = logging.getLogger(__name__)
 
 _CONFIDENCE_THRESHOLD = 0.65
 _MAX_IMPROVE_ATTEMPTS = 2
@@ -38,10 +58,11 @@ _ALGORITHM = load_algorithm()
 
 
 def run_agent(
-    query: str,
-    history: list | None = None,
-    db=None,
-    feedback_db=None,
+        query: str,
+        history: list | None = None,
+        db=None,
+        feedback_db=None,
+        state: AIConversationState | None = None,
 ) -> dict:
     """
     Обрабатывает сообщение пользователя и возвращает ответ.
@@ -51,20 +72,23 @@ def run_agent(
         history:     история диалога [{"query": ..., "answer": ...}, ...]
         db:          основная ChromaDB (может быть None)
         feedback_db: база дообучения (может быть None)
+        state:       состояние машины состояний (может быть None для нового диалога)
 
     Returns:
         {
             "answer":   str,
             "source":   str,   # "template" | "llm" | "filter" | "error"
-            "category": str | None
+            "category": str | None,
+            "state":    dict,  # новое состояние для передачи в следующий вызов
         }
     """
     history = history or []
+    state = state or create_initial_state()
 
     # ШАГ 1: Regex-шаблоны (0 токенов, мгновенно)
     template_answer = match_template(query)
     if template_answer:
-        return _ok(template_answer, "template", None)
+        return _ok(template_answer, "template", None, state)
 
     try:
         with _make_giga() as giga:
@@ -79,15 +103,28 @@ def run_agent(
                     "Если у вас произошла авария — опишите ситуацию.",
                     "filter",
                     None,
+                    state,
                 )
 
             category = meta["category"]
             block = meta["block"]
 
-            # ШАГ 3: RAG — контекст по категории
+            # ШАГ 3: Function Calling для извлечения фактов (после классификации)
+            # Если функция вернёт пустой dict — используем keyword-override из meta_classifier
+            facts = extract_accident_facts(giga, query)
+
+            # Применяем факты и продвигаем машину состояний
+            if facts:
+                state = apply_facts_and_advance_step(state, facts)
+
+            # Проверяем, не перешли ли в сценарий разрешения разногласий
+            if state.facts.has_disagreements is True and state.scenario == "standard":
+                state.scenario = "dispute_resolution"
+
+            # ШАГ 4: RAG — контекст по категории
             context = get_context_for_category(db, feedback_db, query, category)
 
-            # ШАГ 4: Только нужный блок алгоритма ± 1 соседний
+            # ШАГ 5: Только нужный блок алгоритма ± 1 соседний
             algorithm_slice = get_algorithm_slice(block, window=1)
 
             plan = {
@@ -97,7 +134,13 @@ def run_agent(
                 "algorithm_block": block,
             }
 
-            # ШАГ 5: Генерация с условной самопроверкой
+
+            # Добавляем сводку известных фактов в план для генератора
+            plan["known_facts"] = build_known_facts_summary(state)
+            plan["current_step"] = state.current_step
+            plan["scenario"] = state.scenario
+
+            # ШАГ 6: Генерация с условной самопроверкой
             generator_history = build_history(
                 history, component="generator", category=category
             )
@@ -106,24 +149,25 @@ def run_agent(
                 algorithm_slice, generator_history,
             )
 
-            return _ok(answer, "llm", category)
+            return _ok(answer, "llm", category, state)
 
     except Exception as e:
-        print(f"[core] pipeline error: {e}")
+        logger.error(f"[core] pipeline error: {e}")
         return _ok(
             "Произошла техническая ошибка. "
             "Если вы в опасной ситуации — немедленно звоните 112. "
             "Попробуйте повторить вопрос через несколько секунд.",
             "error",
             None,
+            state,
         )
 
 
 def rate_answer(
-    query: str,
-    answer: str,
-    rating: int,
-    feedback_db=None,
+        query: str,
+        answer: str,
+        rating: int,
+        feedback_db=None,
 ) -> dict:
     """
     Запускает AI-критика и при высоких оценках дообучает RAG.
@@ -166,12 +210,12 @@ def _should_run_selfcheck(answer: str) -> bool:
 
 
 def _generate_with_selfcheck(
-    giga: GigaChat,
-    query: str,
-    context: str,
-    plan: dict,
-    algorithm_slice: str,
-    generator_history: str,
+        giga: GigaChat,
+        query: str,
+        context: str,
+        plan: dict,
+        algorithm_slice: str,
+        generator_history: str,
 ) -> tuple[str, float]:
     raw = generate_answer(
         giga, query, context, plan,
@@ -198,5 +242,129 @@ def _generate_with_selfcheck(
     return raw, 0.0
 
 
-def _ok(answer: str, source: str, category: str | None) -> dict:
-    return {"answer": answer, "source": source, "category": category}
+def _ok(answer: str, source: str, category: str | None, state: AIConversationState) -> dict:
+    return {
+        "answer": answer,
+        "source": source,
+        "category": category,
+        "state": state.to_dict(),
+    }
+
+
+def process_voice_message(
+    audio_bytes: bytes,
+    content_type: str = "audio/ogg;codecs=opus",
+    history: list | None = None,
+    db=None,
+    feedback_db=None,
+    state: AIConversationState | None = None,
+) -> dict:
+    """
+    Обрабатывает голосовое сообщение пользователя.
+
+    1. Нормализует аудио (конвертация в PCM 16bit, 16kHz, моно)
+    2. Распознаёт речь через SaluteSpeech STT
+    3. Передаёт текст в run_agent()
+    4. Возвращает ответ + синтезирует аудио (опционально)
+
+    Args:
+        audio_bytes: сырые аудио данные
+        content_type: MIME тип входящего аудио
+        history: история диалога
+        db: основная ChromaDB
+        feedback_db: база дообучения
+        state: состояние машины состояний
+
+    Returns:
+        {
+            "answer": str,
+            "source": str,
+            "category": str | None,
+            "state": dict,
+            "transcribed_text": str,
+            "audio_response": bytes | None,
+            "audio_media_type": str | None,
+        }
+    """
+    try:
+        # Шаг 1: Нормализация аудио
+        normalized = normalize_audio_for_salutespeech(audio_bytes, content_type)
+
+        # Шаг 2: Распознавание речи
+        transcribed_text, _ = transcribe_audio(
+            normalized.pcm_bytes,
+            f"audio/pcm;rate={normalized.sample_rate}",
+        )
+
+        if not transcribed_text.strip():
+            return {
+                "answer": "Не удалось распознать речь. Попробуйте повторить сообщение.",
+                "source": "error",
+                "category": None,
+                "state": (state or create_initial_state()).to_dict(),
+                "transcribed_text": "",
+                "audio_response": None,
+                "audio_media_type": None,
+            }
+
+        # Шаг 3: Обработка текста через основной pipeline
+        result = run_agent(
+            query=transcribed_text,
+            history=history,
+            db=db,
+            feedback_db=feedback_db,
+            state=state,
+        )
+
+        # Шаг 4: Синтез ответа в аудио (опционально, можно отключить флагом)
+        audio_response = None
+        audio_media_type = None
+
+        if result["source"] != "error":
+            try:
+                audio_response, audio_media_type, _ = synthesize_audio(result["answer"])
+            except Exception as e:
+                logger.warning(f"Ошибка синтеза аудио: {e}")
+                # Не роняем весь запрос, просто возвращаем без аудио
+
+        result["transcribed_text"] = transcribed_text
+        result["audio_response"] = audio_response
+        result["audio_media_type"] = audio_media_type
+
+        return result
+
+    except Exception as e:
+        logger.error(f"[core] process_voice_message error: {e}")
+        return {
+            "answer": "Произошла техническая ошибка при обработке голоса. Попробуйте текстовый ввод.",
+            "source": "error",
+            "category": None,
+            "state": (state or create_initial_state()).to_dict(),
+            "transcribed_text": "",
+            "audio_response": None,
+            "audio_media_type": None,
+        }
+
+
+def process_voice_message(
+        audio_bytes: bytes,
+        content_type: str = "audio/ogg;codecs=opus",
+        history: list | None = None,
+        db=None,
+        feedback_db=None,
+        state: AIConversationState | None = None,
+) -> dict:
+    """
+    Обрабатывает голосовое сообщение пользователя.
+
+    Returns:
+        {
+            "answer": str,
+            "source": str,
+            "category": str | None,
+            "state": dict,
+            "transcribed_text": str,
+            "audio_response": bytes | None,
+            "audio_media_type": str | None,
+        }
+    """
