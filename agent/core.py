@@ -12,7 +12,7 @@ Pipeline v5.0 — с машиной состояний и Function Calling.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Optional
 
 from gigachat import GigaChat
 
@@ -24,6 +24,7 @@ from agent.algorithm import load_algorithm, get_algorithm_slice
 from agent.history import build_history
 from evaluation.self_check import improve_answer
 from evaluation.critic import critic_rate_answer
+from evaluation.damage_analyzer import analyze_damage, analyze_multiple_damages
 from rag.feedback_db import save_good_qa
 from templates.matcher import match_template
 from services.dialog_flow import (
@@ -346,25 +347,110 @@ def process_voice_message(
         }
 
 
-def process_voice_message(
-        audio_bytes: bytes,
-        content_type: str = "audio/ogg;codecs=opus",
-        history: list | None = None,
-        db=None,
-        feedback_db=None,
-        state: AIConversationState | None = None,
+
+def process_photo_damage_analysis(
+        image_paths: list[str],
+        vehicle_info: Optional[str] = None,
 ) -> dict:
     """
-    Обрабатывает голосовое сообщение пользователя.
+    Анализирует фотографии повреждений автомобиля и оценивает сумму ущерба.
+
+    Функция использует GigaChat для анализа одного или нескольких изображений,
+    определения типа и степени повреждений, а также расчёта ориентировочной
+    стоимости восстановительного ремонта.
+
+    Args:
+        image_paths: список путей к файлам изображений с повреждениями
+        vehicle_info: информация об автомобиле (марка, модель, год) для уточнения оценки
 
     Returns:
         {
-            "answer": str,
-            "source": str,
-            "category": str | None,
-            "state": dict,
-            "transcribed_text": str,
-            "audio_response": bytes | None,
-            "audio_media_type": str | None,
+            "success": bool,
+            "analysis": dict,              # результаты анализа (individual_analyses + totals)
+            "total_min_cost": float,       # общая минимальная стоимость
+            "total_max_cost": float,       # общая максимальная стоимость
+            "total_avg_cost": float,       # общая средняя стоимость
+            "summary": str,                # сводное описание
+            "currency": str = "RUB",
+            "error": str | None,           # сообщение об ошибке если есть
         }
     """
+    if not image_paths:
+        return {
+            "success": False,
+            "analysis": {},
+            "total_min_cost": 0,
+            "total_max_cost": 0,
+            "total_avg_cost": 0,
+            "summary": "Нет изображений для анализа",
+            "currency": "RUB",
+            "error": "Не предоставлены пути к изображениям",
+        }
+
+    try:
+        with _make_giga() as giga:
+            if len(image_paths) == 1:
+                # Анализ одиночного фото
+                result = analyze_damage(giga, image_paths[0], vehicle_info)
+                return {
+                    "success": True,
+                    "analysis": {"individual": [result]},
+                    "total_min_cost": result.get("min_cost", 0),
+                    "total_max_cost": result.get("max_cost", 0),
+                    "total_avg_cost": result.get("avg_cost", 0),
+                    "summary": result.get("description", ""),
+                    "currency": result.get("currency", "RUB"),
+                    "error": None,
+                }
+            else:
+                # Анализ множественных фото
+                result = analyze_multiple_damages(giga, image_paths, vehicle_info)
+                return {
+                    "success": True,
+                    "analysis": result,
+                    "total_min_cost": result.get("total_min_cost", 0),
+                    "total_max_cost": result.get("total_max_cost", 0),
+                    "total_avg_cost": result.get("total_avg_cost", 0),
+                    "summary": result.get("summary", ""),
+                    "currency": result.get("currency", "RUB"),
+                    "error": None,
+                }
+
+    except FileNotFoundError as e:
+        logger.error(f"[core] process_photo_damage_analysis error: файл не найден - {e}")
+        return {
+            "success": False,
+            "analysis": {},
+            "total_min_cost": 0,
+            "total_max_cost": 0,
+            "total_avg_cost": 0,
+            "summary": "",
+            "currency": "RUB",
+            "error": f"Файл изображения не найден: {e}",
+        }
+
+    except ValueError as e:
+        logger.error(f"[core] process_photo_damage_analysis error: неверный формат - {e}")
+        return {
+            "success": False,
+            "analysis": {},
+            "total_min_cost": 0,
+            "total_max_cost": 0,
+            "total_avg_cost": 0,
+            "summary": "",
+            "currency": "RUB",
+            "error": f"Неподдерживаемый формат файла: {e}",
+        }
+
+    except Exception as e:
+        logger.error(f"[core] process_photo_damage_analysis error: {e}")
+        return {
+            "success": False,
+            "analysis": {},
+            "total_min_cost": 0,
+            "total_max_cost": 0,
+            "total_avg_cost": 0,
+            "summary": "",
+            "currency": "RUB",
+            "error": f"Произошла техническая ошибка при анализе фото: {e}",
+        }
