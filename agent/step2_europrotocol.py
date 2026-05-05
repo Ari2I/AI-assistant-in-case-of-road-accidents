@@ -2,15 +2,16 @@
 Step 2: Interactive Europrotocol filling assistance.
 Provides short instructions for each field and collects data for PDF generation.
 Uses context from Step 1 to skip known fields.
+Uses LLM for intelligent field extraction instead of keyword matching.
 """
 
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
-try:
-    from gigachat.models import Message
-except ImportError:
-    pass
+from gigachat import GigaChat
+from gigachat.models import Chat, Messages, MessagesRole
+
+from config import GIGA_AUTH
 
 class EuroprotocolField(BaseModel):
     """Structure for a single field in the protocol."""
@@ -68,28 +69,94 @@ FIELDS_CONFIG = {
 FIELDS_ORDER = list(FIELDS_CONFIG.keys())
 
 
-def _extract_field_data(message: str, context: Dict[str, Any]) -> Dict[str, Any]:
+STEP2_EXTRACTION_PROMPT = """\
+Ты — ассистент по заполнению Европротокола. Твоя задача: извлечь из сообщения пользователя данные для следующих полей (если они упоминаются):
+
+Доступные поля:
+- datetime: дата и время ДТП
+- location: место ДТП (адрес, км трассы, ориентиры)
+- participant_a: данные владельца автомобиля А (ФИО, номер полиса ОСАГО)
+- participant_b: данные владельца автомобиля Б (ФИО, номер полиса ОСАГО)
+- circumstances: обстоятельства ДТП (маневры автомобилей)
+- damage_description: описание видимых повреждений
+- scheme: схема ДТП (расположение автомобилей)
+- signatures: подтверждение о подписях
+
+ПРАВИЛА:
+- Извлекай ТОЛЬКО явные данные из сообщения. Не додумывай.
+- Если поле уже заполнено в существующих данных (показаны ниже), не извлекай его повторно.
+- Возвращай ответ ТОЛЬКО в формате JSON без лишних комментариев.
+- Используй null для полей, которые не удалось извлечь или которые уже заполнены.
+
+Существующие данные (уже заполненные поля):
+{existing_data}
+
+Сообщение пользователя:
+{user_message}
+
+Пример ответа:
+{{
+    "location": "г. Москва, ул. Ленина, д. 10",
+    "datetime": "15.01.2024 14:30"
+}}
+"""
+
+
+def _make_giga() -> GigaChat:
+    """Create GigaChat client instance."""
+    return GigaChat(
+        credentials=GIGA_AUTH,
+        verify_ssl_certs=False,
+        scope="GIGACHAT_API_B2B",
+    )
+
+
+def _extract_field_data_with_llm(giga: GigaChat, message: str, existing_data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Extract data for any pending fields from the user message.
-    In production, this uses LLM to map text to specific fields.
-    Here we use simple keyword matching for demonstration.
+    Use LLM to extract data for any pending fields from the user message.
+    Returns only new/updated fields.
     """
-    updates = {}
-    lower_msg = message.lower()
+    # Format existing data for prompt
+    if existing_data:
+        existing_str = "\n".join(f"- {k}: {v}" for k, v in existing_data.items())
+    else:
+        existing_str = "(нет заполненных полей)"
 
-    # Simple heuristic extraction (Replace with LLM call in prod)
-    if "datetime" not in context:
-        if "сегодня" in lower_msg or "вчера" in lower_msg or ":" in message:
-            # Mock extraction
-            updates["datetime"] = message.split("?")[0].strip()
+    prompt = STEP2_EXTRACTION_PROMPT.format(
+        existing_data=existing_str,
+        user_message=message
+    )
 
-    if "location" not in context:
-        if "ул." in lower_msg or "дом" in lower_msg or "км" in lower_msg:
-            updates["location"] = message.split("?")[0].strip()
+    payload = Chat(
+        messages=[
+            Messages(role=MessagesRole.SYSTEM, content="Ты — структурированный экстрактор данных для Европротокола. Отвечай только JSON."),
+            Messages(role=MessagesRole.USER, content=prompt),
+        ],
+        temperature=0.0,
+    )
 
-    # Add more extraction logic as needed...
+    try:
+        response = giga.chat(payload)
+        content = response.choices[0].message.content.strip()
 
-    return updates
+        # Parse JSON response
+        import json
+        # Remove markdown code blocks if present
+        if content.startswith("```"):
+            content = content.split("```")[1]
+            if content.startswith("json"):
+                content = content[4:]
+        content = content.strip()
+
+        extracted = json.loads(content)
+        # Filter out None values and already filled fields
+        return {
+            k: v for k, v in extracted.items()
+            if v is not None and k not in existing_data
+        }
+    except Exception as e:
+        print(f"[step2] LLM extraction error: {e}")
+        return {}
 
 
 def _generate_field_instruction(field_id: str) -> tuple[str, str]:
@@ -114,8 +181,9 @@ def process_step2_fill(
         # Map relevant Step 1 data to Step 2 fields if logic allows
         pass
 
-    # 1. Try to extract data from current message for ANY missing field
-    new_data = _extract_field_data(user_message, collected)
+    # 1. Use LLM to extract data from current message for ANY missing field
+    with _make_giga() as giga:
+        new_data = _extract_field_data_with_llm(giga, user_message, collected)
     collected.update(new_data)
 
     # 2. Find the first incomplete field

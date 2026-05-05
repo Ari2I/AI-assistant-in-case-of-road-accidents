@@ -7,14 +7,11 @@ Supports flexible input (multiple slots per message) and context passing.
 from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
 
-try:
-    from gigachat.models import Message, Role
-    from agent.prompts import STEP1_SYSTEM_PROMPT
-except ImportError:
-    # Fallback for local testing without full environment
-    class Message:
-        pass
-    STEP1_SYSTEM_PROMPT = ""
+from gigachat import GigaChat
+from gigachat.models import Chat, Messages, MessagesRole
+
+from config import GIGA_AUTH
+from agent.history import build_history
 
 
 class Step1Result(BaseModel):
@@ -43,6 +40,74 @@ STOP_FACTORS_MAP = {
     "osago_status": "call_gibdd_osago",
 }
 
+STEP1_EXTRACTION_PROMPT = """\
+Ты — ассистент по сбору фактов о ДТП для определения возможности оформления Европротокола.
+
+Твоя задача: извлечь из сообщения пользователя следующие данные (если они упоминаются):
+
+1. safety_measures (bool) — включил ли водитель аварийную сигнализацию и выставил ли знак аварийной остановки
+2. victims (bool) — есть ли пострадавшие (люди, требующие медицинской помощи)
+3. participants_count (int) — количество транспортных средств, участвовавших в ДТП
+4. osago_status (bool) — есть ли у всех водителей действующие полисы ОСАГО
+5. disagreement (bool) — есть ли разногласия между участниками ДТП
+
+ПРАВИЛА:
+- Извлекай ТОЛЬКО явные факты из сообщения. Не додумывай.
+- Если факт не упомянут — не включай его в результат.
+- Возвращай ответ ТОЛЬКО в формате JSON без лишних комментариев.
+- Используй null для полей, которые не удалось извлечь.
+
+Пример ответа:
+{{
+    "victims": false,
+    "participants_count": 2,
+    "osago_status": true
+}}
+
+Сообщение пользователя:
+{user_message}
+"""
+
+
+def _make_giga() -> GigaChat:
+    """Create GigaChat client instance."""
+    return GigaChat(
+        credentials=GIGA_AUTH,
+        verify_ssl_certs=False,
+        scope="GIGACHAT_API_B2B",
+    )
+
+
+def _extract_data_with_llm(giga: GigaChat, user_message: str) -> Dict[str, Any]:
+    """Use LLM to extract structured data from user message."""
+    prompt = STEP1_EXTRACTION_PROMPT.format(user_message=user_message)
+
+    payload = Chat(
+        messages=[
+            Messages(role=MessagesRole.SYSTEM, content="Ты — структурированный экстрактор данных. Отвечай только JSON."),
+            Messages(role=MessagesRole.USER, content=prompt),
+        ],
+        temperature=0.0,
+    )
+
+    try:
+        response = giga.chat(payload)
+        content = response.choices[0].message.content.strip()
+
+        # Parse JSON response
+        import json
+        # Remove markdown code blocks if present
+        if content.startswith("```"):
+            content = content.split("```")[1]
+            if content.startswith("json"):
+                content = content[4:]
+        content = content.strip()
+
+        extracted = json.loads(content)
+        return {k: v for k, v in extracted.items() if v is not None}
+    except Exception as e:
+        print(f"[step1] LLM extraction error: {e}")
+        return {}
 
 def _check_early_exit(data: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     """
@@ -91,59 +156,23 @@ def process_step1_query(
 ) -> Step1Result:
     """
     Process user message for Step 1.
-    Extracts facts flexibly (multiple slots at once).
+    Extracts facts flexibly (multiple slots at once) using LLM.
     Checks for early exit conditions.
     """
     # 1. Initialize state from context
     current_data = conversation_context.get("step1_data", {})
     filled_slots = conversation_context.get("step1_filled_slots", [])
 
-    # 2. Simulate LLM Extraction (In real implementation, call LLM here)
-    # For now, we assume the 'user_message' might contain keywords or
-    # we rely on a previous turn's extraction.
-    # In a real agentic flow, an LLM tool would parse 'user_message'
-    # and update 'current_data' with new findings.
+    # 2. Use LLM to extract entities from user message
+    with _make_giga() as giga:
+        new_extracted = _extract_data_with_llm(giga, user_message)
 
-    # MOCK EXTRACTION LOGIC FOR DEMONSTRATION
-    # In production, replace this block with an LLM call that extracts entities
-    # and merges them into current_data.
-    lower_msg = user_message.lower()
-
-    if "пострадавш" in lower_msg or "больн" in lower_msg or "кровь" in lower_msg:
-        current_data["victims"] = True
-        if "victims" not in filled_slots:
-            filled_slots.append("victims")
-
-    if "нет пострадавш" in lower_msg or "все целы" in lower_msg or "без пострадавших" in lower_msg:
-        current_data["victims"] = False
-        if "victims" not in filled_slots:
-            filled_slots.append("victims")
-
-    if "два" in lower_msg or "2" in lower_msg or "две машины" in lower_msg:
-        if "participants_count" not in current_data: # Don't overwrite if already set
-             current_data["participants_count"] = 2
-             if "participants_count" not in filled_slots:
-                filled_slots.append("participants_count")
-
-    if "три" in lower_msg or "3" in lower_msg or "много" in lower_msg:
-        current_data["participants_count"] = 3
-        if "participants_count" not in filled_slots:
-            filled_slots.append("participants_count")
-
-    if "осаго" in lower_msg and ("нет" in lower_msg or "не" in lower_msg):
-        current_data["osago_status"] = False
-        if "osago_status" not in filled_slots:
-            filled_slots.append("osago_status")
-
-    if "осаго" in lower_msg and ("есть" in lower_msg or "да" in lower_msg):
-        current_data["osago_status"] = True
-        if "osago_status" not in filled_slots:
-            filled_slots.append("osago_status")
-
-    if "аварийк" in lower_msg or "знак" in lower_msg:
-        current_data["safety_measures"] = True
-        if "safety_measures" not in filled_slots:
-            filled_slots.append("safety_measures")
+    # Merge newly extracted data with existing data
+    for key, value in new_extracted.items():
+        if key not in current_data or current_data[key] is None:
+            current_data[key] = value
+            if key not in filled_slots:
+                filled_slots.append(key)
 
     # 3. Check Early Exit (Stop Factors)
     stop_result = _check_early_exit(current_data)
