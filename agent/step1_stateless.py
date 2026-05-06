@@ -13,6 +13,152 @@ from gigachat.models import Chat, Messages, MessagesRole
 from config import GIGA_AUTH
 from agent.history import build_history
 
+# Порядок слотов для опроса (согласно алгоритму и meta_classifier)
+SLOT_ORDER = [
+    "safety_confirmed",
+    "emergency_sign",
+    "victims",
+    "participants_count",
+    "osago_both",
+    "disagreement",
+]
+
+
+def validate_slots(slots: dict) -> tuple[bool, list[str]]:
+    """
+    Проверяет наличие всех обязательных ключей и их типы.
+
+    Обязательные ключи: safety_confirmed, emergency_sign, victims,
+                        participants_count, osago_both, disagreement
+
+    Возвращает:
+        (True, []) если валидно
+        (False, [список ошибок]) иначе
+    """
+    required_keys = [
+        "safety_confirmed",
+        "emergency_sign",
+        "victims",
+        "participants_count",
+        "osago_both",
+        "disagreement",
+    ]
+    errors = []
+
+    # Проверка наличия всех ключей
+    for key in required_keys:
+        if key not in slots:
+            errors.append(f"Missing required slot: {key}")
+
+    if errors:
+        return (False, errors)
+
+    # Проверка типов
+    bool_fields = ["safety_confirmed", "emergency_sign", "victims", "osago_both", "disagreement"]
+    for key in bool_fields:
+        value = slots[key]
+        if value is not None and not isinstance(value, bool):
+            errors.append(f"{key} must be bool or None, got {type(value).__name__}")
+
+    if slots["participants_count"] is not None and not isinstance(slots["participants_count"], int):
+        errors.append(f"participants_count must be int or None, got {type(slots['participants_count']).__name__}")
+
+    if errors:
+        return (False, errors)
+
+    return (True, [])
+
+
+def _init_slots(initial: dict) -> dict:
+    """
+    Возвращает словарь со всеми 6 ключами.
+    Значения из initial сохраняются, остальные = None.
+    Неизвестные ключи из initial игнорируются.
+    """
+    result = {
+        "safety_confirmed": None,
+        "emergency_sign": None,
+        "victims": None,
+        "participants_count": None,
+        "osago_both": None,
+        "disagreement": None,
+    }
+    for key in SLOT_ORDER:
+        if key in initial:
+            result[key] = initial[key]
+    return result
+
+
+def _get_empty_slots(slots: dict) -> list[str]:
+    """
+    Возвращает список ключей со значением None.
+    Порядок соответствует SLOT_ORDER.
+    """
+    return [key for key in SLOT_ORDER if slots.get(key) is None]
+
+
+def _slot_to_block(slot: str) -> int:
+    """
+    Маппинг слота на номер блока алгоритма.
+    safety_confirmed->0, emergency_sign->1, victims->2,
+    participants_count->3, osago_both->4, disagreement->5
+    Неизвестный слот -> 0
+    """
+    mapping = {
+        "safety_confirmed": 0,
+        "emergency_sign": 1,
+        "victims": 2,
+        "participants_count": 3,
+        "osago_both": 4,
+        "disagreement": 5,
+    }
+    return mapping.get(slot, 0)
+
+
+def _fallback_question(slot: str) -> str:
+    """
+    Возвращает вопрос на русском для каждого слота.
+    """
+    questions = {
+        "safety_confirmed": "Обеспечили ли вы безопасность места ДТП (нет пожара, нет угрозы взрыва)?",
+        "emergency_sign": "Включили ли вы аварийную сигнализацию и выставили ли знак аварийной остановки?",
+        "victims": "Есть ли пострадавшие в результате ДТП?",
+        "participants_count": "Сколько транспортных средств участвовало в ДТП?",
+        "osago_both": "Есть ли у всех водителей действующие полисы ОСАГО?",
+        "disagreement": "Согласны ли вы со вторым участником в обстоятельствах ДТП или есть разногласия?",
+    }
+    return questions.get(slot, "Уточните детали происшествия.")
+
+
+def _format_known_facts(slots: dict) -> str:
+    """
+    Форматирует известные факты для промпта.
+    Если все значения None -> строка "ничего не известно"
+    Иначе -> строка вида "key: value\\n" только для не-None значений
+    """
+    filled_items = [(k, v) for k, v in slots.items() if v is not None]
+    if not filled_items:
+        return "ничего не известно"
+    return "\n".join(f"{k}: {v}" for k, v in filled_items)
+
+
+class Step1Response:
+    """
+    Класс ответа Step1.
+    Принимает dict в __init__.
+    Свойства: step_completed (bool, default False),
+              answer (str|None), next_step (str|None)
+    Поддерживает доступ по ключу через __getitem__.
+    """
+    def __init__(self, data: dict):
+        self._data = data
+        self.step_completed = data.get("step_completed", False)
+        self.answer = data.get("answer")
+        self.next_step = data.get("next_step")
+
+    def __getitem__(self, key: str):
+        return self._data[key]
+
 
 class Step1Result(BaseModel):
     """Result of Step 1 processing."""
@@ -27,17 +173,17 @@ class Step1Result(BaseModel):
 
 # Define slots and their order for questioning
 SLOTS_ORDER = [
-    "safety_measures",
+    "safety_confirmed",
     "victims",
     "participants_count",
-    "osago_status",
+    "osago_both",
     "disagreement",
 ]
 
 STOP_FACTORS_MAP = {
     "victims": "call_gibdd_victims",
     "participants_count": "call_gibdd_participants",
-    "osago_status": "call_gibdd_osago",
+    "osago_both": "call_gibdd_osago",
 }
 
 STEP1_EXTRACTION_PROMPT = """\
@@ -45,11 +191,12 @@ STEP1_EXTRACTION_PROMPT = """\
 
 Твоя задача: извлечь из сообщения пользователя следующие данные (если они упоминаются):
 
-1. safety_measures (bool) — включил ли водитель аварийную сигнализацию и выставил ли знак аварийной остановки
-2. victims (bool) — есть ли пострадавшие (люди, требующие медицинской помощи)
-3. participants_count (int) — количество транспортных средств, участвовавших в ДТП
-4. osago_status (bool) — есть ли у всех водителей действующие полисы ОСАГО
-5. disagreement (bool) — есть ли разногласия между участниками ДТП
+1. safety_confirmed (bool) — обеспечена ли безопасность места ДТП (нет пожара, нет угрозы взрыва)
+2. emergency_sign (bool) — включил ли водитель аварийную сигнализацию и выставил ли знак аварийной остановки
+3. victims (bool) — есть ли пострадавшие (люди, требующие медицинской помощи)
+4. participants_count (int) — количество транспортных средств, участвовавших в ДТП
+5. osago_both (bool) — есть ли у всех водителей действующие полисы ОСАГО
+6. disagreement (bool) — есть ли разногласия между участниками ДТП
 
 ПРАВИЛА:
 - Извлекай ТОЛЬКО явные факты из сообщения. Не додумывай.
@@ -61,7 +208,7 @@ STEP1_EXTRACTION_PROMPT = """\
 {{
     "victims": false,
     "participants_count": 2,
-    "osago_status": true
+    "osago_both": true
 }}
 
 Сообщение пользователя:
@@ -124,7 +271,7 @@ def _check_early_exit(data: Dict[str, Any]) -> Optional[Tuple[str, str]]:
         if p_count == 1:
             return "call_gibdd_participants", "❌ ДТП с одним участником (например, наезд на препятствие). Вызовите ГИБДД (102)."
 
-    if data.get("osago_status") is False:
+    if data.get("osago_both") is False:
         return "call_gibdd_osago", "❌ У одного из водителей нет ОСАГО. Вызовите ГИБДД (102)."
 
     return None
@@ -139,10 +286,11 @@ def _get_next_question(filled_slots: List[str], context: Dict[str, Any]) -> str:
                 continue
 
             questions = {
-                "safety_measures": "Вы включили аварийную сигнализацию и выставили знак аварийной остановки?",
+                "safety_confirmed": "Обеспечили ли вы безопасность места ДТП (нет пожара, нет угрозы взрыва)?",
+                "emergency_sign": "Вы включили аварийную сигнализацию и выставили знак аварийной остановки?",
                 "victims": "Есть ли пострадавшие в результате ДТП (люди, требующие медицинской помощи)?",
                 "participants_count": "Сколько всего транспортных средств участвовало в ДТП?",
-                "osago_status": "Есть ли у всех водителей действующие полисы ОСАГО?",
+                "osago_both": "Есть ли у всех водителей действующие полисы ОСАГО?",
                 "disagreement": "Согласны ли вы со вторым участником в обстоятельствах ДТП? Планируете ли использовать приложение 'Помощник ОСАГО'?",
             }
             return questions.get(slot, "Уточните детали происшествия.")

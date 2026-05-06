@@ -13,6 +13,217 @@ from gigachat.models import Chat, Messages, MessagesRole
 
 from config import GIGA_AUTH
 
+# Константы лимитов выплат по Европротоколу
+LIMIT_BASE = 100_000
+LIMIT_WITH_APP_NO_DISAGREEMENT = 400_000
+LIMIT_WITH_APP_DISAGREEMENT = 200_000
+
+
+class StopFactor:
+    """Класс стоп-фактора для проверки возможности Европротокола."""
+
+    def __init__(self, code: str, message: str, severity: str):
+        self.code = code
+        self.message = message
+        self.severity = severity
+
+    def to_dict(self) -> dict:
+        """Возвращает словарь с полями стоп-фактора."""
+        return {
+            "code": self.code,
+            "message": self.message,
+            "severity": self.severity,
+        }
+
+
+class EuroprotocolCheckResult:
+    """Результат проверки возможности оформления Европротокола."""
+
+    def __init__(
+        self,
+        is_possible: bool | str,
+        stop_factors: list,
+        recommendation: str,
+        next_step: str,
+        limits: dict,
+    ):
+        self.is_possible = is_possible
+        self.stop_factors = stop_factors
+        self.recommendation = recommendation
+        self.next_step = next_step
+        self.limits = limits
+
+    def to_dict(self) -> dict:
+        """Возвращает словарь с полями результата."""
+        return {
+            "is_possible": self.is_possible,
+            "stop_factors": [sf.to_dict() if hasattr(sf, 'to_dict') else sf for sf in self.stop_factors],
+            "recommendation": self.recommendation,
+            "next_step": self.next_step,
+            "limits": self.limits,
+        }
+
+
+def validate_slots_for_step2(slots: dict) -> tuple[bool, list[str]]:
+    """
+    Валидирует слоты для Step 2.
+
+    Обязательные ключи: victims, participants_count, osago_both, disagreement
+    - victims: bool или None (не str)
+    - participants_count: int или None (не str)
+    - osago_both: bool или None
+    - disagreement: bool или None
+
+    None значения допустимы.
+
+    Возвращает:
+        (True, []) если валидно
+        (False, [список ошибок]) иначе
+    """
+    required_keys = ["victims", "participants_count", "osago_both", "disagreement"]
+    errors = []
+
+    # Проверка наличия всех ключей
+    for key in required_keys:
+        if key not in slots:
+            errors.append(f"Missing required slot: {key}")
+
+    if errors:
+        return (False, errors)
+
+    # Проверка типов
+    if slots["victims"] is not None and not isinstance(slots["victims"], bool):
+        errors.append(f"victims must be bool or None, got {type(slots['victims']).__name__}")
+
+    if slots["participants_count"] is not None and not isinstance(slots["participants_count"], int):
+        errors.append(f"participants_count must be int or None, got {type(slots['participants_count']).__name__}")
+
+    if slots["osago_both"] is not None and not isinstance(slots["osago_both"], bool):
+        errors.append(f"osago_both must be bool or None, got {type(slots['osago_both']).__name__}")
+
+    if slots["disagreement"] is not None and not isinstance(slots["disagreement"], bool):
+        errors.append(f"disagreement must be bool or None, got {type(slots['disagreement']).__name__}")
+
+    if errors:
+        return (False, errors)
+
+    return (True, [])
+
+def process_step2_check(slots: dict, has_app: bool) -> EuroprotocolCheckResult:
+    """
+    Проверяет возможность оформления Европротокола.
+
+    Логика:
+    - Собирает все критические стоп-факторы (не останавливается на первом):
+      * victims == True -> StopFactor("victims", severity="critical")
+      * participants_count > 2 -> StopFactor("participants_3plus", severity="critical")
+      * participants_count == 1 -> StopFactor("participants_1", severity="critical")
+      * osago_both == False -> StopFactor("no_osago", severity="critical")
+    - Если есть критические стоп-факторы: is_possible=False, next_step="call_gibdd"
+    - Иначе если disagreement == True и has_app == False:
+        is_possible="conditional", рекомендация упоминает приложения
+    - Иначе если disagreement == True и has_app == True:
+        is_possible=True, limits={"base": LIMIT_WITH_APP_DISAGREEMENT}
+    - Иначе (нет разногласий):
+        is_possible=True, limits зависит от has_app
+
+    None-значения слотов не считаются стоп-факторами.
+    """
+    stop_factors = []
+
+    # Сбор критических стоп-факторов
+    if slots.get("victims") is True:
+        stop_factors.append(StopFactor(
+            code="victims",
+            message="Есть пострадавшие",
+            severity="critical",
+        ))
+
+    p_count = slots.get("participants_count")
+    if p_count is not None:
+        if p_count > 2:
+            stop_factors.append(StopFactor(
+                code="participants_3plus",
+                message="Участников больше двух",
+                severity="critical",
+            ))
+        elif p_count == 1:
+            stop_factors.append(StopFactor(
+                code="participants_1",
+                message="ДТП с одним участником",
+                severity="critical",
+            ))
+
+    if slots.get("osago_both") is False:
+        stop_factors.append(StopFactor(
+            code="no_osago",
+            message="Нет ОСАГО у одного из участников",
+            severity="critical",
+        ))
+
+    # Если есть критические стоп-факторы
+    if stop_factors:
+        # Формирование рекомендации
+        rec_parts = []
+        for sf in stop_factors:
+            if sf.code == "victims":
+                rec_parts.append("Немедленно вызовите скорую (103) и ГИБДД (102).")
+            else:
+                rec_parts.append("Вызовите ГИБДД (102).")
+        recommendation = " ".join(rec_parts)
+
+        return EuroprotocolCheckResult(
+            is_possible=False,
+            stop_factors=stop_factors,
+            recommendation=recommendation,
+            next_step="call_gibdd",
+            limits={},
+        )
+
+    # Проверка разногласий
+    disagreement = slots.get("disagreement")
+
+    if disagreement is True and has_app is False:
+        # Разногласия без приложения - условно возможен
+        return EuroprotocolCheckResult(
+            is_possible="conditional",
+            stop_factors=[StopFactor(
+                code="disagreement_no_app",
+                message="Разногласия без приложения",
+                severity="warning",
+            )],
+            recommendation="При разногласиях рекомендуется использовать приложение «Помощник ОСАГО» или «Госуслуги Авто» для фиксации ДТП.",
+            next_step="step3_fixation_with_disagreement",
+            limits={"base": 0, "with_app": LIMIT_WITH_APP_DISAGREEMENT},
+        )
+
+    if disagreement is True and has_app is True:
+        # Разногласия с приложением - возможен, лимит 200к
+        return EuroprotocolCheckResult(
+            is_possible=True,
+            stop_factors=[],
+            recommendation="Европротокол возможен с приложением. Максимальная выплата до 200 000 руб.",
+            next_step="step3_fixation",
+            limits={"base": LIMIT_WITH_APP_DISAGREEMENT},
+        )
+
+    # Нет разногласий
+    if has_app:
+        limit = LIMIT_WITH_APP_NO_DISAGREEMENT
+        recommendation = f"Европротокол возможен. С приложением максимальная выплата до {limit // 1000} 000 руб."
+    else:
+        limit = LIMIT_BASE
+        recommendation = f"Европротокол возможен. Максимальная выплата до {limit // 1000} 000 руб. Рекомендуется использовать приложение для увеличения лимита до 400 000 руб."
+
+    return EuroprotocolCheckResult(
+        is_possible=True,
+        stop_factors=[],
+        recommendation=recommendation,
+        next_step="step3_fixation",
+        limits={"base": limit},
+    )
+
+
 class EuroprotocolField(BaseModel):
     """Structure for a single field in the protocol."""
     field_id: str

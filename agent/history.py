@@ -15,7 +15,6 @@ from __future__ import annotations
 _COMPONENT_LIMITS: dict[str, int | None] = {
     "filter": 2,
     "classifier": 5,
-    "planner": 4,
     "self_check": 3,
 }
 
@@ -63,7 +62,7 @@ def build_history(
 
     Args:
         history:   список реплик [{"query": ..., "answer": ...}, ...]
-        component: "filter" | "classifier" | "planner" | "generator" | "self_check"
+        component: "filter" | "classifier" | "generator" | "self_check"
         category:  категория запроса (нужна только для component="generator")
 
     Returns:

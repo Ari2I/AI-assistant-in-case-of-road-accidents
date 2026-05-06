@@ -1,7 +1,3 @@
---- tests/test_step2_europrotocol.py (原始)
-
-
-+++ tests/test_step2_europrotocol.py (修改后)
 """
 Unit-тесты для модуля step2_europrotocol.
 
