@@ -4,14 +4,17 @@ Collects minimal facts to determine if Europrotocol is applicable.
 Supports flexible input (multiple slots per message) and context passing.
 """
 
+from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
+import json
 
 from gigachat import GigaChat
 from gigachat.models import Chat, Messages, MessagesRole
 
 from config import GIGA_AUTH
 from agent.history import build_history
+from agent.step_types import Step, StepResponse
 
 # Порядок слотов для опроса (согласно алгоритму и meta_classifier)
 SLOT_ORDER = [
@@ -23,6 +26,48 @@ SLOT_ORDER = [
     "disagreement",
 ]
 
+_SLOT_EXTRACTION_PROMPT = """\
+Извлеки факты о ДТП из сообщения пользователя.
+
+Текущие известные данные (не изменяй уже заполненные):
+{current_slots}
+
+Сообщение пользователя: "{message}"
+
+Верни ТОЛЬКО валидный JSON без пояснений и markdown.
+Заполняй ТОЛЬКО поля, явно подтверждённые в сообщении.
+Не выдумывай. Незаполненные — null.
+
+{{
+  "safety_confirmed": true/false/null,
+  "emergency_sign": true/false/null,
+  "victims": true/false/null,
+  "participants_count": <целое число>/null,
+  "osago_both": true/false/null,
+  "disagreement": true/false/null
+}}
+"""
+
+_QUESTION_PROMPT = """\
+Ты — ДТП-ассистент. Задай короткий вопрос для уточнения одного факта.
+
+Известные данные: {known_facts}
+Нужно узнать: {slot_name}
+Описание: {slot_description}
+История (последние 3 реплики): {recent_history}
+
+Задай вопрос одним предложением, естественно и по-русски.
+Не повторяй уже заданные вопросы из истории.
+"""
+
+_SLOT_DESCRIPTIONS = {
+    "safety_confirmed": "безопасность места ДТП (нет пожара, угрозы взрыва)",
+    "emergency_sign":   "включена аварийная сигнализация и выставлен знак",
+    "victims":          "есть ли пострадавшие, требующие медицинской помощи",
+    "participants_count": "количество транспортных средств — участников ДТП",
+    "osago_both":       "наличие действующих полисов ОСАГО у всех участников",
+    "disagreement":     "наличие разногласий об обстоятельствах ДТП",
+}
 
 def validate_slots(slots: dict) -> tuple[bool, list[str]]:
     """
@@ -171,14 +216,177 @@ class Step1Result(BaseModel):
     question: str = ""
 
 
-# Define slots and their order for questioning
-SLOTS_ORDER = [
-    "safety_confirmed",
-    "victims",
-    "participants_count",
-    "osago_both",
-    "disagreement",
-]
+# --- Приватные функции для process_step1_with_llm ---
+
+def _extract_slots_llm(giga: GigaChat, message: str, current_slots: dict) -> dict:
+    """
+    Вызывает GigaChat для извлечения слотов.
+    Возвращает dict с обновлёнными значениями.
+    При ошибке парсинга JSON — возвращает {}.
+    """
+    prompt = _SLOT_EXTRACTION_PROMPT.format(
+        current_slots=_format_known_facts(current_slots),
+        message=message,
+    )
+    payload = Chat(
+        messages=[
+            Messages(role=MessagesRole.SYSTEM, content="Ты — структурированный экстрактор данных. Отвечай только JSON."),
+            Messages(role=MessagesRole.USER, content=prompt),
+        ],
+        temperature=0.0,
+    )
+    try:
+        response = giga.chat(payload)
+        content = response.choices[0].message.content.strip()
+        # Remove markdown code blocks if present
+        if content.startswith("```"):
+            content = content.split("```")[1]
+            if content.startswith("json"):
+                content = content[4:]
+        content = content.strip()
+        extracted = json.loads(content)
+        return {k: v for k, v in extracted.items() if v is not None}
+    except Exception as e:
+        print(f"[step1] slot extraction error: {e}")
+        return {}
+
+
+def _ask_question_llm(giga: GigaChat, slots: dict, next_slot: str, history: list) -> str:
+    """
+    Генерирует уточняющий вопрос через GigaChat.
+    При любой ошибке — вызывает _fallback_question(next_slot).
+    """
+    recent = history[-3:] if len(history) >= 3 else history
+    recent_text = "\n".join(
+        f"П: {h['query']} / А: {h['answer']}" for h in recent
+    ) or "(начало диалога)"
+    prompt = _QUESTION_PROMPT.format(
+        known_facts=_format_known_facts(slots),
+        slot_name=next_slot,
+        slot_description=_SLOT_DESCRIPTIONS.get(next_slot, ""),
+        recent_history=recent_text,
+    )
+    try:
+        payload = Chat(
+            messages=[
+                Messages(role=MessagesRole.SYSTEM, content="Ты — ДТП-ассистент. Задавай короткие вопросы по одному факту."),
+                Messages(role=MessagesRole.USER, content=prompt),
+            ],
+            temperature=0.3,
+        )
+        response = giga.chat(payload)
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"[step1] question generation error: {e}")
+        return _fallback_question(next_slot)
+
+
+def _check_early_exit_step1(slots: dict) -> tuple[str, str] | None:
+    """
+    Проверяет стоп-факторы. Возвращает (код, инструкция) или None.
+    Проверяет в порядке: victims -> participants_count -> osago_both.
+    """
+    if slots.get("victims") is True:
+        return (
+            "call_gibdd_victims",
+            "❌ Есть пострадавшие. Немедленно вызовите скорую (103) и ГИБДД (102). Европротокол оформлять нельзя."
+        )
+    p_count = slots.get("participants_count")
+    if p_count is not None:
+        if p_count > 2:
+            return (
+                "call_gibdd_participants",
+                "❌ Участников больше двух. Вызовите ГИБДД (102). Европротокол невозможен."
+            )
+        if p_count == 1:
+            return (
+                "call_gibdd_participants",
+                "❌ ДТП с одним участником (например, наезд на препятствие). Вызовите ГИБДД (102)."
+            )
+    if slots.get("osago_both") is False:
+        return (
+            "call_gibdd_osago",
+            "❌ У одного из водителей нет ОСАГО. Вызовите ГИБДД (102)."
+        )
+    return None
+
+
+# --- Главная функция для шагового режима ---
+
+def process_step1_with_llm(
+    giga: GigaChat,
+    query: str,
+    history: list,
+    current_slots: dict,
+) -> StepResponse:
+    """
+    Основная функция step1. Принимает активный клиент GigaChat.
+    Вызывается из core._run_step1() — не создаёт клиент сам.
+
+    Алгоритм:
+    1. Вызывает GigaChat для извлечения слотов из query.
+       При ошибке парсинга — current_slots без изменений.
+    2. Объединяет: None из extracted НЕ затирает уже заполненное.
+    3. Проверяет стоп-факторы (_check_early_exit_step1):
+       victims==True        -> next_step=CALL_GIBDD, ответ с 103+102
+       participants_count>2 -> next_step=CALL_GIBDD, ответ с 102
+       participants_count==1 -> next_step=CALL_GIBDD
+       osago_both==False    -> next_step=CALL_GIBDD, ответ с 102
+    4. Если все 6 слотов заполнены:
+       step_completed=True, next_step=STEP2
+    5. Иначе — генерирует вопрос по первому пустому слоту:
+       Пробует LLM, при ошибке — _fallback_question().
+       step_completed=False, next_step=STEP1
+
+    Возвращает StepResponse (из agent.step_types).
+    """
+    # Шаг 1: Извлечение слотов через LLM
+    merged = _init_slots(current_slots)
+    try:
+        extracted = _extract_slots_llm(giga, query, merged)
+        for k, v in extracted.items():
+            if v is not None:          # не затираем уже заполненное
+                merged[k] = v
+    except Exception as e:
+        print(f"[step1] slot extraction error: {e}")
+
+    # Шаг 2: Стоп-факторы
+    stop = _check_early_exit_step1(merged)
+    if stop:
+        next_step_code, instruction = stop
+        return StepResponse(
+            answer=instruction,
+            step_completed=True,
+            next_step=Step.CALL_GIBDD,
+            slots=merged,
+        )
+
+    # Шаг 3: Все слоты заполнены?
+    empty = _get_empty_slots(merged)
+    if not empty:
+        return StepResponse(
+            answer=(
+                "Отлично! Все данные собраны. "
+                "Переходим к оформлению Европротокола."
+            ),
+            step_completed=True,
+            next_step=Step.STEP2,
+            slots=merged,
+        )
+
+    # Шаг 4: Вопрос по первому пустому слоту
+    next_slot = empty[0]
+    try:
+        question = _ask_question_llm(giga, merged, next_slot, history)
+    except Exception:
+        question = _fallback_question(next_slot)
+
+    return StepResponse(
+        answer=question,
+        step_completed=False,
+        next_step=Step.STEP1,
+        slots=merged,
+    )
 
 STOP_FACTORS_MAP = {
     "victims": "call_gibdd_victims",
@@ -279,7 +487,7 @@ def _check_early_exit(data: Dict[str, Any]) -> Optional[Tuple[str, str]]:
 
 def _get_next_question(filled_slots: List[str], context: Dict[str, Any]) -> str:
     """Generate the next single question based on missing slots."""
-    for slot in SLOTS_ORDER:
+    for slot in SLOT_ORDER:
         if slot not in filled_slots:
             # Skip asking if we already have the data in context from previous turns
             if slot in context and context[slot] is not None:
@@ -335,7 +543,7 @@ def process_step1_query(
         )
 
     # 4. Check Completion
-    all_slots_filled = all(slot in filled_slots for slot in SLOTS_ORDER)
+    all_slots_filled = all(slot in filled_slots for slot in SLOT_ORDER)
 
     if all_slots_filled:
         # Success: Move to Step 2
@@ -351,7 +559,7 @@ def process_step1_query(
     next_q = _get_next_question(filled_slots, current_data)
 
     # Identify missing slots for the response
-    missing = [s for s in SLOTS_ORDER if s not in filled_slots]
+    missing = [s for s in SLOT_ORDER if s not in filled_slots]
 
     return Step1Result(
         finished=False,

@@ -9,7 +9,7 @@
   - Fallback-вопросы
 """
 
-import pytest
+import unittest
 from pathlib import Path
 import sys
 
@@ -331,3 +331,104 @@ class TestStep1Response:
         from agent.step1_stateless import Step1Response
         result = Step1Response({"slots": {"a": 1}})
         assert result["slots"] == {"a": 1}
+
+
+
+# =============================================================================
+# ТЕСТЫ process_step1_with_llm С МОКИРОВАНИЕМ GIGACHAT
+# =============================================================================
+
+class TestStep1WithLLM:
+    """Тесты process_step1_with_llm с мокированием GigaChat."""
+
+    @staticmethod
+    def _make_giga(json_response: str):
+        """Возвращает мок GigaChat с фиксированным ответом."""
+        class FakeMsg:
+            content = json_response
+        class FakeChoice:
+            message = FakeMsg()
+        class FakeResp:
+            choices = [FakeChoice()]
+        class FakeGiga:
+            def chat(self, *args, **kwargs):
+                return FakeResp()
+        return FakeGiga()
+
+    def test_victims_stops_at_call_gibdd(self):
+        from agent.step1_stateless import process_step1_with_llm
+        giga = self._make_giga(
+            '{"victims": true, "safety_confirmed": null, '
+            '"emergency_sign": null, "participants_count": null, '
+            '"osago_both": null, "disagreement": null}'
+        )
+        result = process_step1_with_llm(giga, "есть пострадавший", [], {})
+        assert result.step_completed is True
+        assert str(result.next_step) in ("call_gibdd", "Step.CALL_GIBDD")
+        assert "103" in result.answer or "102" in result.answer
+
+    def test_no_osago_stops_at_call_gibdd(self):
+        from agent.step1_stateless import process_step1_with_llm
+        giga = self._make_giga(
+            '{"victims": false, "participants_count": 2, '
+            '"osago_both": false, "safety_confirmed": null, '
+            '"emergency_sign": null, "disagreement": null}'
+        )
+        result = process_step1_with_llm(giga, "нет ОСАГО", [], {})
+        assert result.step_completed is True
+        assert str(result.next_step) in ("call_gibdd", "Step.CALL_GIBDD")
+
+    def test_all_slots_transitions_to_step2(self):
+        from agent.step1_stateless import process_step1_with_llm
+        full_slots = {
+            "safety_confirmed": True, "emergency_sign": True,
+            "victims": False, "participants_count": 2,
+            "osago_both": True, "disagreement": False,
+        }
+        # LLM не добавляет ничего нового
+        giga = self._make_giga(
+            '{"safety_confirmed": null, "emergency_sign": null, '
+            '"victims": null, "participants_count": null, '
+            '"osago_both": null, "disagreement": null}'
+        )
+        result = process_step1_with_llm(giga, "всё верно", [], full_slots)
+        assert result.step_completed is True
+        assert str(result.next_step) in ("step2", "Step.STEP2")
+
+    def test_partial_slots_asks_question(self):
+        from agent.step1_stateless import process_step1_with_llm
+        giga = self._make_giga(
+            '{"safety_confirmed": true, "emergency_sign": null, '
+            '"victims": null, "participants_count": null, '
+            '"osago_both": null, "disagreement": null}'
+        )
+        result = process_step1_with_llm(giga, "аварийку включил", [], {})
+        assert result.step_completed is False
+        assert str(result.next_step) in ("step1", "Step.STEP1")
+        assert result.answer
+
+    def test_broken_json_preserves_current_slots(self):
+        from agent.step1_stateless import process_step1_with_llm
+        class BrokenGiga:
+            def chat(self, *a, **kw):
+                class R:
+                    class C:
+                        class M:
+                            content = "не JSON"
+                        message = M()
+                    choices = [C()]
+                return R()
+        current = {"safety_confirmed": True}
+        result = process_step1_with_llm(BrokenGiga(), "непонятно", [], current)
+        assert result.slots.get("safety_confirmed") is True
+
+    def test_three_participants_stops(self):
+        from agent.step1_stateless import process_step1_with_llm
+        giga = self._make_giga(
+            '{"victims": false, "participants_count": 3, '
+            '"osago_both": null, "safety_confirmed": null, '
+            '"emergency_sign": null, "disagreement": null}'
+        )
+        result = process_step1_with_llm(giga, "три машины", [], {})
+        assert result.step_completed is True
+        assert str(result.next_step) in ("call_gibdd", "Step.CALL_GIBDD")

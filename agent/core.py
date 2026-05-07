@@ -14,6 +14,7 @@ from gigachat import GigaChat
 
 from config import GIGA_AUTH
 from agent.meta_classifier import meta_classify
+from agent.step_types import Step, StepResponse
 from agent.retriever import get_context_for_category
 from agent.generator import generate_answer
 from agent.algorithm import load_algorithm, get_algorithm_slice
@@ -22,6 +23,8 @@ from evaluation.self_check import improve_answer
 from evaluation.critic import critic_rate_answer
 from rag.feedback_db import save_good_qa
 from templates.matcher import match_template
+from agent.step2_europrotocol import process_step2_with_llm
+from agent.step1_stateless import process_step1_with_llm
 
 _CONFIDENCE_THRESHOLD = 0.65
 _MAX_IMPROVE_ATTEMPTS = 2
@@ -39,7 +42,10 @@ _ALGORITHM = load_algorithm()
 
 def run_agent(
     query: str,
+    current_step: str | None = None,
     history: list | None = None,
+    slots: dict | None = None,
+    collected_fields: dict | None = None,
     db=None,
     feedback_db=None,
 ) -> dict:
@@ -48,18 +54,50 @@ def run_agent(
 
     Args:
         query:       сообщение пользователя
+        current_step: текущий шаг ("general", "step1", "step2", "done", "call_gibdd")
         history:     история диалога [{"query": ..., "answer": ...}, ...]
+        slots:       собранные слоты для step1/step2
+        collected_fields: собранные поля для europrotocol
         db:          основная ChromaDB (может быть None)
         feedback_db: база дообучения (может быть None)
 
     Returns:
         {
             "answer":   str,
-            "source":   str,   # "template" | "llm" | "filter" | "error"
-            "category": str | None
+            "source":   str,   # "template" | "llm" | "filter" | "error" | "step1" | "step2"
+            "category": str | None,
+            "step_completed": bool,
+            "next_step": str | None,
+            "slots": dict | None,
+            "collected_fields": dict | None,
+            "final_json": dict | None,
         }
     """
     history = history or []
+
+    # --- Шаговый режим ---
+    if current_step in (Step.STEP1, "step1"):
+        try:
+            with _make_giga() as giga:
+                result = _run_step1(giga, query, history, slots or {})
+            return _step_response_to_dict(result, "step1")
+        except Exception as e:
+            print(f"[core] step1 error: {e}")
+            return _step_error_response()
+
+    if current_step in (Step.STEP2, "step2"):
+        try:
+            with _make_giga() as giga:
+                result = _run_step2(
+                    giga, query, history,
+                    slots or {}, collected_fields or {}
+                )
+            return _step_response_to_dict(result, "step2")
+        except Exception as e:
+            print(f"[core] step2 error: {e}")
+            return _step_error_response()
+
+    # --- Иначе: существующий general-пайплайн ---
 
     # ШАГ 1: Regex-шаблоны (0 токенов, мгновенно)
     template_answer = match_template(query)
@@ -199,4 +237,69 @@ def _generate_with_selfcheck(
 
 
 def _ok(answer: str, source: str, category: str | None) -> dict:
-    return {"answer": answer, "source": source, "category": category}
+    return {
+        "answer": answer,
+        "source": source,
+        "category": category,
+        "step_completed": False,
+        "next_step": None,
+        "slots": None,
+        "collected_fields": None,
+        "final_json": None,
+    }
+
+# ---------------------------------------------------------------------------
+# Вспомогательные функции для шагового режима
+# ---------------------------------------------------------------------------
+
+def _run_step1(giga, query: str, history: list, slots: dict) -> StepResponse:
+    """Делегирует в step1_stateless.process_step1_with_llm()."""
+
+    return process_step1_with_llm(giga, query, history, slots)
+
+def _run_step2(
+        giga,
+        query: str,
+        history: list,
+        slots: dict,
+        collected_fields: dict,
+) -> StepResponse:
+    """Делегирует в step2_europrotocol.process_step2_with_llm()."""
+
+
+    return process_step2_with_llm(
+        giga,
+        query,
+        history,
+        slots,
+        collected_fields,
+    )
+
+def _step_response_to_dict(result: StepResponse, source: str) -> dict:
+    """Преобразует StepResponse в dict для возврата бэкенду."""
+    return {
+        "answer": result.answer,
+        "source": source,
+        "category": None,
+        "step_completed": result.step_completed,
+        "next_step": result.next_step,
+        "slots": result.slots,
+        "collected_fields": result.collected_fields,
+        "final_json": result.final_json,
+    }
+
+def _step_error_response() -> dict:
+    """Возвращает безопасный ответ при ошибке шагового режима."""
+    return {
+        "answer": (
+            "Произошла техническая ошибка. "
+            "Если вы в опасной ситуации — немедленно звоните 112."
+        ),
+        "source": "error",
+        "category": None,
+        "step_completed": False,
+        "next_step": Step.STEP1,
+        "slots": {},
+        "collected_fields": {},
+        "final_json": None,
+    }

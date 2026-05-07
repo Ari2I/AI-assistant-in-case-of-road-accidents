@@ -12,6 +12,7 @@ from gigachat import GigaChat
 from gigachat.models import Chat, Messages, MessagesRole
 
 from config import GIGA_AUTH
+from agent.step_types import Step, StepResponse
 
 # Константы лимитов выплат по Европротоколу
 LIMIT_BASE = 100_000
@@ -369,12 +370,165 @@ def _extract_field_data_with_llm(giga: GigaChat, message: str, existing_data: Di
         print(f"[step2] LLM extraction error: {e}")
         return {}
 
+_FIELD_EXTRACTION_PROMPT = """\
+Извлеки данные для Европротокола из сообщения пользователя.
+
+Уже заполненные поля (не изменяй):
+{filled_fields}
+
+Доступные незаполненные поля:
+{empty_fields}
+
+Сообщение: "{message}"
+
+Верни ТОЛЬКО валидный JSON без пояснений.
+Заполняй ТОЛЬКО явно указанные в сообщении поля.
+Незаполненные — null.
+
+Доступные ключи: datetime, location, participant_a, participant_b,
+circumstances, damage_description, scheme, signatures.
+"""
 
 def _generate_field_instruction(field_id: str) -> tuple[str, str]:
     """Get instruction and question for a specific field."""
     config = FIELDS_CONFIG.get(field_id, {})
     return config.get("instruction", ""), config.get("prompt", "")
 
+def _map_slots_to_fields(slots: dict, history: list) -> dict:
+    """
+    Переносит релевантные данные из step1 в поля step2.
+    Базовая версия: возвращает пустой dict.
+    Расширенная версия может анализировать history на наличие
+    адреса, времени, марок авто и предзаполнять соответствующие поля.
+    """
+    return {}
+
+
+def _extract_fields_llm(giga, message: str, existing: dict) -> dict:
+    """
+    Вызывает GigaChat для извлечения полей Европротокола.
+    При ошибке парсинга — возвращает {}.
+    """
+    import json
+    from gigachat.models import Chat, Messages, MessagesRole
+
+    filled_str = "\n".join(f"- {k}: {v}" for k, v in existing.items()) \
+                 if existing else "(нет заполненных полей)"
+    empty_keys = [f for f in FIELDS_ORDER if not existing.get(f)]
+    empty_str = ", ".join(empty_keys) if empty_keys else "(все заполнены)"
+
+    prompt = _FIELD_EXTRACTION_PROMPT.format(
+        filled_fields=filled_str,
+        empty_fields=empty_str,
+        message=message,
+    )
+
+    try:
+        payload = Chat(
+            messages=[
+                Messages(role=MessagesRole.SYSTEM, content="Ты — структурированный экстрактор данных для Европротокола. Отвечай только JSON."),
+                Messages(role=MessagesRole.USER, content=prompt),
+            ],
+            temperature=0.0,
+        )
+        response = giga.chat(payload)
+        content = response.choices[0].message.content.strip()
+
+        # Remove markdown code blocks if present
+        if content.startswith("```"):
+            content = content.split("```")[1]
+            if content.startswith("json"):
+                content = content[4:]
+        content = content.strip()
+
+        extracted = json.loads(content)
+        return {k: v for k, v in extracted.items() if v is not None}
+    except Exception as e:
+        print(f"[step2] field extraction error: {e}")
+        return {}
+
+
+def process_step2_with_llm(
+    giga,
+    query: str,
+    history: list,
+    slots: dict,
+    collected_fields: dict,
+) -> StepResponse:
+    """
+    Основная функция step2. Принимает активный клиент GigaChat.
+
+    1. При первом вызове (collected_fields пустой):
+       Предзаполняет поля из slots через _map_slots_to_fields(slots, history).
+
+    2. Вызывает GigaChat для извлечения полей из query.
+       При ошибке — collected_fields без изменений.
+
+    3. Обновляет collected_fields (None не затирает заполненное).
+
+    4. Находит первое незаполненное поле из FIELDS_ORDER.
+
+    5. Все поля заполнены:
+       step_completed=True, next_step=Step.DONE
+       final_json = {
+           "type": "europrotocol",
+           "status": "ready_for_pdf",
+           "data": collected_fields
+       }
+       answer = инструкция по отправке в страховую (5 рабочих дней)
+
+    6. Иначе:
+       Генерирует подсказку + вопрос для текущего поля.
+       step_completed=False, next_step=Step.STEP2
+
+    Возвращает StepResponse (из agent.step_types).
+    """
+
+
+    # Предзаполнение из данных step1
+    if not collected_fields:
+        collected_fields = _map_slots_to_fields(slots, history)
+
+    # Извлечение новых полей через LLM
+    try:
+        new_data = _extract_fields_llm(giga, query, collected_fields)
+        for k, v in new_data.items():
+            if v is not None:
+                collected_fields[k] = v
+    except Exception as e:
+        print(f"[step2] field extraction error: {e}")
+
+    # Следующее незаполненное поле
+    current_field = next(
+        (f for f in FIELDS_ORDER if not collected_fields.get(f)),
+        None
+    )
+
+    if current_field is None:
+        final_json = {
+            "type": "europrotocol",
+            "status": "ready_for_pdf",
+            "data": collected_fields,
+        }
+        return StepResponse(
+            answer=(
+                "✅ Протокол заполнен! Направьте извещение в страховую "
+                "компанию в течение 5 рабочих дней. "
+                "Данные переданы для формирования PDF."
+            ),
+            step_completed=True,
+            next_step=Step.DONE,
+            collected_fields=collected_fields,
+            final_json=final_json,
+        )
+
+    instr, question = _generate_field_instruction(current_field)
+    return StepResponse(
+        answer=f"{instr}\n\n{question}",
+        step_completed=False,
+        next_step=Step.STEP2,
+        collected_fields=collected_fields,
+    )
 
 def process_step2_fill(
     user_message: str,

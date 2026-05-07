@@ -1,181 +1,163 @@
 """
-Локальный CLI для тестирования агента.
-Запуск: python main_AI.py
+CLI для локального тестирования ДТП-ассистента.
+Симулирует поведение Django-бэкенда: хранит состояние локально
+и передаёт его в run_agent() при каждом запросе.
 
-История хранится в памяти на время сессии — имитирует то,
-что в продакшне делает бэкенд.
-
-Режимы тестирования:
-  1. Основной агент (run_agent) — полный цикл по алгоритму
-  2. Step 1 (stateless fact collection) — сбор фактов для Европротокола
-  3. Step 2 (europrotocol filling) — пошаговое заполнение протокола
+Режимы:
+  1. Шаговый flow (step1 -> step2) — основной режим тестирования
+  2. General-пайплайн — вопросы по ДТП/ОСАГО без шагового режима
 """
 
-from typing import Optional
-
 from agent.core import run_agent, rate_answer
-from agent.step1_stateless import process_step1_query, Step1Result
-from agent.step2_europrotocol import process_step2_fill, Step2Result
+from agent.step_types import Step
 
 
-def test_step1_mode() -> None:
-    """Интерактивное тестирование Step 1 — сбор фактов о ДТП."""
-    print("\n=== ТЕСТ STEP 1: Сбор фактов для Европротокола ===")
-    print("Вводите данные о ДТП. Бот будет задавать уточняющие вопросы.")
-    print("Команды: 'выход' — завершить, 'сброс' — начать заново\n")
+def _map_slots_to_fields(slots: dict) -> dict:
+    """
+    Переносит данные из step1 в начальный контекст step2.
+    Базовая реализация: пустой перенос.
+    """
+    return {}
 
-    context: dict = {"step1_data": {}, "step1_filled_slots": []}
+
+def _print_state(current_step: str, slots: dict,
+                 collected_fields: dict) -> None:
+    """Выводит текущее состояние диалога."""
+    print(f"\n{'─' * 40}")
+    print(f"  Шаг: {current_step}")
+    if current_step == "step1":
+        filled = {k: v for k, v in slots.items() if v is not None}
+        print(f"  Слоты ({len(filled)}/6): {filled or '(пусто)'}")
+    elif current_step == "step2":
+        filled = {k: v for k, v in collected_fields.items() if v}
+        print(f"  Поля ({len(filled)}/8): {list(filled.keys()) or '(пусто)'}")
+    print(f"{'─' * 40}\n")
+
+
+def run_step_flow() -> None:
+    """
+    Шаговый режим: step1 -> step2 -> done / call_gibdd.
+    Симулирует работу бэкенда.
+    """
+    # --- Состояние бэкенда ---
+    history: list[dict]        = []
+    current_step: str          = Step.STEP1
+    slots: dict                = {}
+    collected_fields: dict     = {}
+
+    print("\n=== Шаговый режим: Оформление Европротокола ===")
+    print("Команды: 'выход' — завершить, 'состояние' — показать данные\n")
 
     while True:
-        query = input("Ты: ").strip()
+        _print_state(current_step, slots, collected_fields)
+        query = input("Вы: ").strip()
 
         if not query:
             continue
         if query.lower() == "выход":
             break
-        if query.lower() == "сброс":
-            context = {"step1_data": {}, "step1_filled_slots": []}
-            print("Контекст сброшен. Начинаем заново.\n")
+        if query.lower() == "состояние":
             continue
 
-        result: Step1Result = process_step1_query(query, context)
+        # --- Вызов агента (как это делает Django-view) ---
+        response = run_agent(
+            query=query,
+            current_step=current_step,
+            history=history,
+            slots=slots,
+            collected_fields=collected_fields,
+        )
 
-        # Обновляем контекст для следующей итерации
-        context["step1_data"] = result.extracted_data
-        context["step1_filled_slots"] = [
-            k for k, v in result.extracted_data.items() if v is not None
-        ]
+        print(f"\nАссистент: {response['answer']}\n")
 
-        print(f"\nБот: {result.instruction}")
-        if result.question and not result.finished:
-            print(f"Вопрос: {result.question}")
-        if result.finished:
-            print(f"\n✅ Этап завершён. Следующий шаг: {result.next_step}")
-            if result.stop_factor:
-                print(f"⚠️ Стоп-фактор: {result.stop_factor}")
-            print(f"Собранные данные: {result.extracted_data}")
-            print("\nНачинаем новый сценарий...\n")
-            context = {"step1_data": {}, "step1_filled_slots": []}
-        else:
-            print(f"Заполнено слотов: {len(context['step1_filled_slots'])}/5")
-            print(f"Осталось: {result.missing_slots}\n")
+        # --- Обновление состояния (как это делает Django) ---
+        history.append({"query": query, "answer": response["answer"]})
 
+        if response.get("slots"):
+            slots = response["slots"]
+        if response.get("collected_fields"):
+            collected_fields = response["collected_fields"]
 
-def test_step2_mode() -> None:
-    """Интерактивное тестирование Step 2 — заполнение Европротокола."""
-    print("\n=== ТЕСТ STEP 2: Заполнение Европротокола ===")
-    print("Вводите данные для каждого поля протокола.")
-    print("Команды: 'выход' — завершить, 'сброс' — начать заново\n")
+        # --- Маршрутизация ---
+        if response.get("step_completed"):
+            next_s = response.get("next_step", "")
 
-    # Можно предварительно заполнить данные из Step 1
-    context: dict = {
-        "step2_data": {},
-        "step1_data": {},  # Сюда можно передать данные из Step 1 при необходимости
-    }
+            if next_s == Step.STEP2:
+                current_step = Step.STEP2
+                collected_fields = _map_slots_to_fields(slots)
+                print(f"[Переход → Шаг 2: заполнение Европротокола]\n")
 
-    while True:
-        query = input("Ты: ").strip()
+            elif next_s == Step.CALL_GIBDD:
+                print("[⚠️ Вызовите ГИБДД. Сессия завершена.]\n")
+                break
 
-        if not query:
-            continue
-        if query.lower() == "выход":
-            break
-        if query.lower() == "сброс":
-            context = {"step2_data": {}, "step1_data": {}}
-            print("Контекст сброшен. Начинаем заново.\n")
-            continue
+            elif next_s == Step.DONE:
+                print("\n[✅ Протокол готов!]")
+                if response.get("final_json"):
+                    import json
+                    print(json.dumps(
+                        response["final_json"],
+                        ensure_ascii=False, indent=2
+                    ))
+                break
 
-        result: Step2Result = process_step2_fill(query, context)
-
-        # Обновляем контекст
-        context["step2_data"] = result.collected_data
-
-        print(f"\nБот: {result.instruction}")
-        if result.question and not result.finished:
-            print(f"Запрос: {result.question}")
-        if result.finished:
-            print(f"\n✅ Протокол готов! Данные: {result.final_json}")
-            print("\nНачинаем новый сценарий...\n")
-            context = {"step2_data": {}, "step1_data": {}}
-        else:
-            print(f"Текущее поле: {result.current_field}")
-            filled_count = len([k for k, v in result.collected_data.items() if v])
-            print(f"Заполнено полей: {filled_count}/{len(FIELDS_ORDER_FOR_DISPLAY)}\n")
+        # --- Оценка ---
+        rating_str = input("Оценить ответ (0-5 или Enter): ").strip()
+        if rating_str.isdigit():
+            rating = int(rating_str)
+            if 0 <= rating <= 5:
+                r = rate_answer(query=query,
+                                answer=response["answer"],
+                                rating=rating)
+                print(f"Критик: {r['critic_score']}/5 — {r['critic_comment']}")
 
 
-# Поля для отображения прогресса в Step 2
-FIELDS_ORDER_FOR_DISPLAY = [
-    "datetime", "location", "participant_a", "participant_b",
-    "circumstances", "damage_description", "scheme", "signatures"
-]
-
-
-def select_mode() -> str:
-    """Предлагает пользователю выбрать режим тестирования."""
-    print("\n" + "=" * 50)
-    print("ВЫБЕРИТЕ РЕЖИМ ТЕСТИРОВАНИЯ:")
-    print("=" * 50)
-    print("1. Полный агент (основной сценарий)")
-    print("2. Step 1 — Сбор фактов (Европротокол)")
-    print("3. Step 2 — Заполнение Европротокола")
-    print("0. Выход")
-    print("=" * 50)
-
-    while True:
-        choice = input("Ваш выбор (0-3): ").strip()
-        if choice in ("0", "1", "2", "3"):
-            return choice
-        print("Неверный ввод. Введите число от 0 до 3.")
-
-
-def main() -> None:
-    """Главный цикл CLI с выбором режима."""
-    print("\n🚗 ДТП-ассистент — CLI для тестирования")
-
-    while True:
-        mode = select_mode()
-
-        if mode == "0":
-            print("Завершение работы. До свидания!")
-            break
-        elif mode == "1":
-            run_full_agent_mode()
-        elif mode == "2":
-            test_step1_mode()
-        elif mode == "3":
-            test_step2_mode()
-
-
-def run_full_agent_mode() -> None:
-    """Режим полного агента с историей диалога."""
-    history: list[dict[str, str]] = []
-
-    print("\n--- ПОЛНЫЙ АГЕНТ ---")
+def run_general_mode() -> None:
+    """General-пайплайн: вопросы по ДТП/ОСАГО (старый режим)."""
+    history: list[dict] = []
+    print("\n=== General-режим: вопросы по ДТП и ОСАГО ===")
     print("Введите 'выход' для возврата в меню.\n")
 
     while True:
-        query = input("Ты: ").strip()
-
+        query = input("Вы: ").strip()
         if not query:
             continue
         if query.lower() == "выход":
             break
 
         response = run_agent(query=query, history=history)
-        answer = response["answer"]
+        print(f"\nАссистент [{response['source']}]: {response['answer']}\n")
+        history.append({"query": query, "answer": response["answer"]})
 
-        print(f"\nБот [{response['source']}]: {answer}\n")
-
-        # Сохраняем в локальную историю — имитация бэкенда
-        history.append({"query": query, "answer": answer})
-
-        # Оценка ответа
-        rating_input = input("Оцени ответ (0-5 или Enter): ").strip()
-        if rating_input.isdigit():
-            rating = int(rating_input)
+        rating_str = input("Оценить (0-5 или Enter): ").strip()
+        if rating_str.isdigit():
+            rating = int(rating_str)
             if 0 <= rating <= 5:
-                result = rate_answer(query=query, answer=answer, rating=rating)
-                print(f"Критик: {result['critic_score']}/5 — {result['critic_comment']}\n")
+                r = rate_answer(query=query,
+                                answer=response["answer"],
+                                rating=rating)
+                print(f"Критик: {r['critic_score']}/5 — {r['critic_comment']}")
+
+
+def main() -> None:
+    while True:
+        print("\n" + "=" * 45)
+        print("  ДТП-ассистент — локальное тестирование")
+        print("=" * 45)
+        print("  1. Шаговый режим (step1 → step2)")
+        print("  2. General-режим (вопросы по ДТП/ОСАГО)")
+        print("  0. Выход")
+        print("=" * 45)
+        choice = input("Выбор: ").strip()
+        if choice == "1":
+            run_step_flow()
+        elif choice == "2":
+            run_general_mode()
+        elif choice == "0":
+            print("До свидания!")
+            break
+        else:
+            print("Неверный ввод.")
 
 
 if __name__ == "__main__":
