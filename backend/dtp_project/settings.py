@@ -12,29 +12,32 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 
 from pathlib import Path
 import os
+from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# Load environment variables from .env file
+load_dotenv(BASE_DIR / '.env')
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-_9r9d1y%t1p#u(7#93z%!61fgvg256nul2y!mo!q*g+@1boa9%'
+SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'django-insecure-local-dev-key-please-change')
+# SECRET_KEY = 'django-insecure-_9r9d1y%t1p#u(7#93z%!61fgvg256nul2y!mo!q*g+@1boa9%'
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+# ALLOWED_HOSTS = ['ваш_логин.pythonanywhere.com', 'localhost', '127.0.0.1']
+# ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', '*').split(',') # Для локального запуска через docker
+ALLOWED_HOSTS = ['ваш_ip', 'ваш_домен.ru', 'localhost', '127.0.0.1']
 
 
 # Application definition
 
 INSTALLED_APPS = [
-    'corsheaders.middleware.CorsMiddleware', # Должно быть первым
-    'django.middleware.security.SecurityMiddleware',
-    'corsheaders',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -44,12 +47,9 @@ INSTALLED_APPS = [
     'accounts',
     'geolocation',
     'ai_assistant',
-    'corsheaders',
 ]
 
 MIDDLEWARE = [
-    'corsheaders.middleware.CorsMiddleware', # Должно быть первым
-    'django.middleware.security.SecurityMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -64,13 +64,14 @@ ROOT_URLCONF = 'dtp_project.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        'DIRS': [BASE_DIR / 'templates'],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
+                'geolocation.context_processors.yandex_api_key',
             ],
         },
     },
@@ -84,12 +85,8 @@ WSGI_APPLICATION = 'dtp_project.wsgi.application'
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.getenv('NEW_DB_NAME'),
-        'USER': os.getenv('DB_USER'),
-        'PASSWORD': os.getenv('DB_PASSWORD'),
-        'HOST': os.getenv('DB_HOST'),
-        'PORT': os.getenv('DB_PORT'),
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': BASE_DIR / 'db.sqlite3',
     }
 }
 
@@ -129,6 +126,17 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+STATICFILES_DIRS = [
+    BASE_DIR / 'static',
+]
+
+# Media files
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+
+# Yandex Geocoder API Key
+YANDEX_GEOCODER_API_KEY = os.getenv('YANDEX_GEOCODER_API_KEY', '')
 
 # Authentication
 LOGIN_URL = 'accounts:register'
@@ -139,15 +147,3 @@ LOGOUT_REDIRECT_URL = 'accounts:register'
 # https://docs.djangoproject.com/en/6.0/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
-
-# Разрешить запросы с локального сервера разработки
-CORS_ALLOWED_ORIGINS = [
-    "http://127.0.0.1:5500",
-    "http://localhost:5500",
-]
-
-# Для отладки можно разрешить все (не для продакшена!)
-# CORS_ALLOW_ALL_ORIGINS = True
-
-# Разрешить передачу куки (если нужно)
-CORS_ALLOW_CREDENTIALS = True

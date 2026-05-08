@@ -1,0 +1,9 @@
+langchain-community
+langchain-huggingface
+chromadb
+gigachat
+sentence-transformers
+unstructured[md]
+langchain-text-splitters
+python-dotenv
+langchain_chroma

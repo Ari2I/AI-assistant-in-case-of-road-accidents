@@ -1,83 +1,159 @@
-from django.shortcuts import render
-
-# Create your views here.
-
-from django.shortcuts import get_object_or_404
-from django.contrib.auth import authenticate, login, logout
+from django.shortcuts import render, redirect
+from django.contrib.auth import login, logout, authenticate
+from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 import json
-from .models import Profile
-from .forms import RegistrationForm, ProfileUpdateForm
+import re
+
+from .forms import RegistrationForm
 
 
-@csrf_exempt
-@require_http_methods(["POST"])
 def register_view(request):
-    try:
-        data = json.loads(request.body)
-        # Передаем данные в форму
-        form = RegistrationForm(data)
+    """
+    Регистрация нового пользователя
+    """
+    if request.user.is_authenticated:
+        return redirect('accounts:profile')
+
+    if request.method == 'POST':
+        form = RegistrationForm(request.POST)
         if form.is_valid():
             user = form.save()
             login(request, user)
-            return JsonResponse({'status': 'success', 'user_id': user.id})
-        return JsonResponse({'status': 'error', 'errors': form.errors}, status=400)
-    except Exception as e:
-        return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
+            return redirect('accounts:profile')
+    else:
+        form = RegistrationForm()
+
+    return render(request, 'accounts/register.html', {'form': form})
 
 
-@csrf_exempt
-@require_http_methods(["POST"])
 def login_view(request):
+    """
+    Вход пользователя
+    """
+    if request.user.is_authenticated:
+        return redirect('accounts:profile')
+
+    error = None
+
+    if request.method == 'POST':
+        contact = request.POST.get('contact', '').strip()
+        password = request.POST.get('password', '')
+
+        if contact and password:
+            # Пробуем найти пользователя по email или телефону
+            user = None
+
+            # Проверка на email
+            email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+
+            if re.match(email_pattern, contact):
+                try:
+                    user = User.objects.get(email=contact)
+                except User.DoesNotExist:
+                    pass
+            else:
+                # Для телефона используем username
+                try:
+                    user = User.objects.get(username=contact)
+                except User.DoesNotExist:
+                    pass
+
+            if user:
+                user = authenticate(request, username=user.username, password=password)
+                if user:
+                    login(request, user)
+                    return redirect('accounts:profile')
+
+        error = 'Неверный email/телефон или пароль'
+
+    return render(request, 'accounts/login.html', {'error': error})
+
+
+@login_required
+def logout_view(request):
+    """
+    Выход пользователя
+    """
+    logout(request)
+    return redirect('accounts:register')
+
+
+@login_required
+def profile_view(request):
+    """
+    Страница профиля пользователя
+    """
+    if request.method == 'POST':
+        user = request.user
+        data = json.loads(request.body)
+
+        # Обновление данных
+        if 'name' in data:
+            user.first_name = data['name']
+        if 'email' in data:
+            user.email = data['email']
+        if 'phone' in data:
+            user.username = data['phone']
+
+        # Смена пароля
+        if 'password' in data and data['password']:
+            if data['password'] == data.get('password_repeat', ''):
+                user.set_password(data['password'])
+            else:
+                return JsonResponse({
+                    'success': False,
+                    'error': 'Пароли не совпадают'
+                }, status=400)
+
+        user.save()
+        return JsonResponse({'success': True})
+
+    return render(request, 'accounts/profile.html')
+
+
+@require_http_methods(['GET'])
+@login_required
+def user_data_api(request):
+    """
+    API для получения данных пользователя
+    """
+    user = request.user
+    return JsonResponse({
+        'id': user.id,
+        'email': user.email,
+        'username': user.username,
+        'first_name': user.first_name,
+        'last_name': user.last_name,
+    })
+
+
+@require_http_methods(['POST'])
+@login_required
+def save_europrotocol(request):
+    """
+    API для сохранения данных европротокола
+    """
     try:
         data = json.loads(request.body)
-        username = data.get('username') or data.get('contact')
-        password = data.get('password')
-        user = authenticate(request, username=username, password=password)
-        if user is not None:
-            login(request, user)
-            return JsonResponse({'status': 'success', 'user_id': user.id})
-        return JsonResponse({'status': 'error', 'message': 'Неверный логин или пароль'}, status=401)
-    except Exception as e:
-        return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
-
-
-@csrf_exempt
-def logout_view(request):
-    logout(request)
-    return JsonResponse({'status': 'success'})
-
-
-@csrf_exempt
-@require_http_methods(["GET", "PUT"])
-def profile_view(request):
-    if not request.user.is_authenticated:
-        return JsonResponse({'status': 'error', 'message': 'Требуется авторизация'}, status=401)
-
-    if request.method == 'GET':
-        profile = get_object_or_404(Profile, user=request.user)
+        
+        # Здесь можно сохранить данные в базу
+        # Для примера просто логируем
+        print("Europrotocol data:", data)
+        
         return JsonResponse({
-            'name': f"{request.user.first_name} {request.user.last_name}".strip() or request.user.username,
-            'email': request.user.email,
-            'phone': profile.phone or ''
+            'success': True,
+            'message': 'Данные европротокола сохранены'
         })
-
-    elif request.method == 'PUT':
-        try:
-            data = json.loads(request.body)
-            # Для PUT запроса нужно добавить 'data' ключ для формы
-            form = ProfileUpdateForm(data=data, instance=request.user)
-
-            if form.is_valid():
-                user = form.save()
-                # Обновляем телефон в профиле отдельно
-                if 'phone' in data:
-                    user.profile.phone = data['phone']
-                    user.profile.save()
-                return JsonResponse({'status': 'success', 'message': 'Профиль обновлен'})
-            return JsonResponse({'status': 'error', 'errors': form.errors}, status=400)
-        except Exception as e:
-            return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
+    except json.JSONDecodeError:
+        return JsonResponse({
+            'success': False,
+            'error': 'Неверный формат данных'
+        }, status=400)
+    except Exception as e:
+        return JsonResponse({
+            'success': False,
+            'error': str(e)
+        }, status=500)

@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="description" content="ДТП Ассистент — AI помощник при ДТП. Оформление европротокола, фотофиксация, расчёт выплат по ОСАГО, консультация 24/7." />
+  <meta name="theme-color" content="#1a1a2e" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>ДТП Ассистент — AI помощник при ДТП</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300;14..32,400;14..32,500;14..32,600;14..32,700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="chat-container">
+    <!-- Боковая панель (история диалогов) -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <div class="logo">
+          <div class="logo-icon">🛡️</div>
+          <div class="logo-text">
+            <span class="logo-title">ДТП Ассистент</span>
+            <span class="logo-sub">AI помощник</span>
+          </div>
+        </div>
+        <button class="new-chat-btn" id="newChatBtn" aria-label="Новый чат">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="12" y1="5" x2="12" y2="19"/>
+            <line x1="5" y1="12" x2="19" y2="12"/>
+          </svg>
+          <span>Новый чат</span>
+        </button>
+      </div>
+      
+      <div class="chat-history" id="chatHistory">
+        <div class="history-item history-item--active" data-chat="1">
+          <span>📋 Оформление ДТП</span>
+          <span class="history-date">Сегодня</span>
+        </div>
+        <div class="history-item" data-chat="2">
+          <span>📝 Вопрос по страховой</span>
+          <span class="history-date">Вчера</span>
+        </div>
+      </div>
+
+      <div class="sidebar-footer">
+        <div class="lang-switch" id="langSwitch">
+          <button class="lang-btn lang-btn--active" data-lang="ru" aria-label="Русский язык">Русский</button>
+          <button class="lang-btn" data-lang="en" aria-label="English language">English</button>
+        </div>
+        <button class="profile-btn" id="openProfileBtn" aria-label="Профиль">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+            <circle cx="12" cy="7" r="4"/>
+          </svg>
+          <span>Профиль</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- Оверлей для мобильного меню -->
+    <div class="sidebar-overlay" id="sidebarOverlay"></div>
+
+    <!-- Основная область чата -->
+    <main class="chat-main">
+      <!-- Шапка чата -->
+      <header class="chat-header">
+        <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Меню">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="3" y1="12" x2="21" y2="12"/>
+            <line x1="3" y1="6" x2="21" y2="6"/>
+            <line x1="3" y1="18" x2="21" y2="18"/>
+          </svg>
+        </button>
+        <div class="chat-header-info">
+          <div class="assistant-avatar">
+            <div class="avatar-pulse"></div>
+            <span>🤖</span>
+          </div>
+          <div class="assistant-details">
+  <h2>ДТП Ассистент</h2>
+  <p>AI помощник</p>
+</div>
+        </div>
+        <div class="header-actions">
+          <button class="header-action-btn" id="shareChatBtn" aria-label="Поделиться чатом">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/>
+              <polyline points="16 6 12 2 8 6"/>
+              <line x1="12" y1="2" x2="12" y2="15"/>
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <!-- Область сообщений -->
+      <div class="chat-messages-area" id="chatMessagesArea">
+        <div class="messages-container" id="messagesContainer">
+          <!-- Сообщения будут добавляться динамически через JS -->
+        </div>
+
+        <!-- Индикатор печати -->
+        <div class="typing-indicator" id="typingIndicator" style="display: none;">
+          <div class="message message--assistant">
+            <div class="message-avatar">🤖</div>
+            <div class="message-content">
+              <div class="message-bubble">
+                <div class="typing-dots">
+                  <span></span><span></span><span></span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Быстрые действия (чипсы) -->
+      <div class="quick-actions" id="quickActions">
+        <button class="quick-action-chip" data-action="euro">
+          📋 Оформить европротокол
+        </button>
+        <button class="quick-action-chip" data-action="diagram">
+          🗺️ Составить схему ДТП
+        </button>
+        <button class="quick-action-chip" data-action="photo">
+          📸 Как правильно сфотографировать?
+        </button>
+        <button class="quick-action-chip" data-action="payout">
+          💰 Рассчитать выплату
+        </button>
+        <button class="quick-action-chip" data-action="deadline">
+          ⏰ Сроки подачи документов
+        </button>
+        <button class="quick-action-chip" data-action="call">
+          🚨 Вызвать экстренные службы
+        </button>
+      </div>
+
+      <!-- Поле ввода -->
+      <div class="chat-input-area">
+        <div class="input-container">
+          <button class="attach-btn" id="attachBtn" aria-label="Прикрепить файл">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+            </svg>
+          </button>
+          <textarea 
+            id="messageInput" 
+            class="chat-input" 
+            placeholder="Напишите сообщение..."
+            rows="1"
+            aria-label="Сообщение чата"
+          ></textarea>
+          <button class="send-btn" id="sendBtn" aria-label="Отправить">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="22" y1="2" x2="11" y2="13"/>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+            </svg>
+          </button>
+        </div>
+        <p class="input-hint">AI может ошибаться. Для точной информации обращайтесь в страховую.</p>
+      </div>
+    </main>
+  </div>
+
+  <!-- МОДАЛЬНОЕ ОКНО: ЗАГРУЗКА ФОТО -->
+  <div class="modal" id="photoModal" role="dialog" aria-label="Загрузка фото">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>📸 Загрузить фото</h3>
+        <button class="modal-close" aria-label="Закрыть">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="photo-guide-modal">
+          <p><strong>Что нужно сфотографировать:</strong></p>
+          <ul>
+            <li>📍 Общий план места ДТП</li>
+            <li>🚗 Расположение автомобилей</li>
+            <li>🔍 Все повреждения крупно</li>
+            <li>📋 Госномера обоих авто</li>
+            <li>📄 Заполненный европротокол</li>
+          </ul>
+        </div>
+        <div class="upload-buttons">
+          <label class="upload-btn-modal" aria-label="Выбрать файлы с устройства">
+            📁 Выбрать файлы
+            <input type="file" id="modalFileInput" multiple accept="image/*" hidden />
+          </label>
+          <label class="upload-btn-modal" aria-label="Сделать фото на камеру">
+            📷 Сделать фото
+            <input type="file" id="modalCameraInput" accept="image/*" capture="environment" hidden />
+          </label>
+        </div>
+        <div id="photoPreviewList" class="photo-preview-list"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-cancel">Отмена</button>
+        <button class="btn-submit" id="photoSubmitBtn">Отправить</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- МОДАЛЬНОЕ ОКНО: ПРОФИЛЬ -->
+  <div class="modal" id="profileModal" role="dialog" aria-label="Профиль пользователя">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>👤 Профиль пользователя</h3>
+        <button class="modal-close" aria-label="Закрыть">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="profile-form">
+          <div class="form-field">
+            <label for="profileName">Имя</label>
+            <input type="text" id="profileName" placeholder="Иван Иванов" autocomplete="name" />
+          </div>
+          <div class="form-field">
+            <label for="profilePhone">Телефон</label>
+            <input type="tel" id="profilePhone" placeholder="+7 900 000-00-00" autocomplete="tel" />
+          </div>
+          <div class="form-field">
+            <label for="profileEmail">Email</label>
+            <input type="email" id="profileEmail" placeholder="ivan@example.com" autocomplete="email" />
+          </div>
+          <div class="form-field">
+            <label for="profilePolicy">Серия/номер полиса ОСАГО</label>
+            <input type="text" id="profilePolicy" placeholder="XXX XXX XXXXXX" autocomplete="off" />
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-cancel">Отмена</button>
+        <button class="btn-submit" id="profileSaveBtn">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- МОДАЛЬНОЕ ОКНО: ЭКСТРЕННЫЙ ВЫЗОВ -->
+  <div class="modal" id="callModal" role="dialog" aria-label="Экстренный вызов">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>🚨 Вызов экстренных служб</h3>
+        <button class="modal-close" aria-label="Закрыть">&times;</button>
+      </div>
+      <div class="modal-body call-modal-body">
+        <div class="emergency-numbers">
+          <div class="emergency-card" data-number="112" role="button" tabindex="0" aria-label="Позвонить 112">
+            <div class="emergency-icon">🚑</div>
+            <div class="emergency-number">112</div>
+            <div class="emergency-name">Единый номер</div>
+          </div>
+          <div class="emergency-card" data-number="102" role="button" tabindex="0" aria-label="Позвонить 102 полиция">
+            <div class="emergency-icon">👮</div>
+            <div class="emergency-number">102</div>
+            <div class="emergency-name">Полиция</div>
+          </div>
+          <div class="emergency-card" data-number="103" role="button" tabindex="0" aria-label="Позвонить 103 скорая помощь">
+            <div class="emergency-icon">🏥</div>
+            <div class="emergency-number">103</div>
+            <div class="emergency-name">Скорая помощь</div>
+          </div>
+        </div>
+        <p class="emergency-note">⚠️ Звоните только в случае реальной необходимости</p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-cancel">Отмена</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- МОДАЛЬНОЕ ОКНО: СХЕМА ДТП (Яндекс.Карты) -->
+  <div class="modal" id="diagramModal" role="dialog" aria-label="Схема ДТП">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>🗺️ Схема ДТП</h3>
+        <button class="modal-close" aria-label="Закрыть">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p>Отметьте позиции автомобилей и укажите направление движения. Нажмите на карту, чтобы добавить маркер.</p>
+        <div id="diagramMap" style="width:100%;height:400px;border-radius:12px;overflow:hidden;"></div>
+        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          <button class="btn-submit" id="saveDiagramBtn">Сохранить схему</button>
+          <button class="btn-cancel" id="clearDiagramBtn">Очистить</button>
+          <button class="btn-submit" id="toggleDrawBtn" style="background:#0ea5a4;border-radius:8px;">Нарисовать схему</button>
+        </div>
+      </div>
+      <div class="modal-footer">
+      </div>
+    </div>
+  </div>
+
+  <!-- Yandex Maps API: -->
+  <script src="https://api-maps.yandex.ru/2.1/?lang=ru_RU&apikey=" defer></script>
+
+  <script src="app.js"></script>
+</body>
+</html>

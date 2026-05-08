@@ -1,0 +1,32 @@
+# docker-compose.yml (в корне репозитория, рядом с папкой backend/)
+version: '3.8'
+
+services:
+  web:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: dtp_assistant
+    env_file:
+      - ./backend/.env
+    ports:
+      - "8000:8000"
+    volumes:
+      # Сохраняем базу данных и медиа-файлы между перезапусками
+      - ./backend/db.sqlite3:/app/db.sqlite3:rw
+      - ./backend/media:/app/media:rw
+      - ./backend/ai_assistant/chroma_db:/app/ai_assistant/chroma_db:rw
+      - ./backend/staticfiles:/app/staticfiles:rw
+      # Опционально: монтируем .env для удобной смены ключей
+      - ./backend/.env:/app/.env:ro
+    environment:
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-django-insecure-dev-key}
+      - DEBUG=${DEBUG:-False}
+      - ALLOWED_HOSTS=${ALLOWED_HOSTS:-*}
+      # Отключаем предупреждение о symlink на Windows
+      - HF_HUB_DISABLE_SYMLINKS_WARNING=1
+    restart: unless-stopped
+
+volumes:
+  backend_data:
+  backend_media:

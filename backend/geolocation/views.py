@@ -17,6 +17,7 @@ def select_location(request):
     return render(request, 'geolocation/select_location.html')
 
 
+@csrf_exempt
 @require_http_methods(['POST'])
 @login_required
 def get_address_api(request):

@@ -1,6 +1,6 @@
 from django.apps import AppConfig
 
 
-class AiAssistantConfig(AppConfig):
+class AccountsConfig(AppConfig):
     default_auto_field = 'django.db.models.BigAutoField'
-    name = 'ai_assistant'
+    name = 'accounts'
