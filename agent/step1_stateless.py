@@ -32,7 +32,18 @@ _SLOT_EXTRACTION_PROMPT = """\
 Текущие известные данные (не изменяй уже заполненные):
 {current_slots}
 
+История диалога (последние 3 реплики):
+{recent_history}
+
 Сообщение пользователя: "{message}"
+
+
+ВНИМАНИЕ: Пользователь может отвечать кратко:
+- "да", "yes", "ага", "конечно" → true
+- "нет", "no", "не", "никогда" → false
+- Числа (например "2", "три", "один") → соответствующее целое число для participants_count
+
+Краткие ответы относятся к последнему вопросу ассистента в истории диалога.
 
 Верни ТОЛЬКО валидный JSON без пояснений и markdown.
 Заполняй ТОЛЬКО поля, явно подтверждённые в сообщении.
@@ -218,14 +229,23 @@ class Step1Result(BaseModel):
 
 # --- Приватные функции для process_step1_with_llm ---
 
-def _extract_slots_llm(giga: GigaChat, message: str, current_slots: dict) -> dict:
+def _extract_slots_llm(giga: GigaChat, message: str, current_slots: dict, history: list) -> dict:
     """
     Вызывает GigaChat для извлечения слотов.
     Возвращает dict с обновлёнными значениями.
     При ошибке парсинга JSON — возвращает {}.
     """
+
+    # Format recent history (last 3 exchanges)
+    recent = history[-3:] if len(history) >= 3 else history
+    recent_text = "\n".join(
+        f"П: {h['query']} / А: {h['answer']}" for h in recent
+    ) or "(начало диалога)"
+
+
     prompt = _SLOT_EXTRACTION_PROMPT.format(
         current_slots=_format_known_facts(current_slots),
+        recent_history=recent_text,
         message=message,
     )
     payload = Chat(
@@ -343,7 +363,7 @@ def process_step1_with_llm(
     # Шаг 1: Извлечение слотов через LLM
     merged = _init_slots(current_slots)
     try:
-        extracted = _extract_slots_llm(giga, query, merged)
+        extracted = _extract_slots_llm(giga, query, merged, history)
         for k, v in extracted.items():
             if v is not None:          # не затираем уже заполненное
                 merged[k] = v
@@ -411,6 +431,12 @@ STEP1_EXTRACTION_PROMPT = """\
 - Если факт не упомянут — не включай его в результат.
 - Возвращай ответ ТОЛЬКО в формате JSON без лишних комментариев.
 - Используй null для полей, которые не удалось извлечь.
+- Учитывай контекст диалога: краткие ответы ("да", "нет", числа) относятся к последнему заданному вопросу.
+
+ВАЖНО: Пользователь может отвечать кратко:
+- "да", "yes", "ага", "конечно" → true
+- "нет", "no", "не", "никогда" → false
+- Числа (например "2", "три", "один") → соответствующее целое число для participants_count
 
 Пример ответа:
 {{
@@ -418,6 +444,12 @@ STEP1_EXTRACTION_PROMPT = """\
     "participants_count": 2,
     "osago_both": true
 }}
+
+Известные данные на текущий момент:
+{known_data}
+
+История диалога (последние 3 реплики):
+{recent_history}
 
 Сообщение пользователя:
 {user_message}
@@ -433,9 +465,26 @@ def _make_giga() -> GigaChat:
     )
 
 
-def _extract_data_with_llm(giga: GigaChat, user_message: str) -> Dict[str, Any]:
-    """Use LLM to extract structured data from user message."""
-    prompt = STEP1_EXTRACTION_PROMPT.format(user_message=user_message)
+def _extract_data_with_llm(giga: GigaChat, user_message: str, conversation_context: Dict[str, Any]) -> Dict[str, Any]:
+    """Use LLM to extract structured data from user message with context."""
+    current_data = conversation_context.get("step1_data", {})
+    history = conversation_context.get("history", [])
+
+    # Format known data
+    known_data_str = "ничего не известно" if not current_data else "\n".join(f"{k}: {v}" for k, v in current_data.items() if v is not None)
+
+    # Format recent history (last 3 exchanges)
+    recent_history = history[-3:] if len(history) >= 3 else history
+    recent_history_str = "\n".join(
+        f"Пользователь: {h['query']}\nАссистент: {h['answer']}"
+        for h in recent_history
+    ) or "(начало диалога)"
+
+    prompt = STEP1_EXTRACTION_PROMPT.format(
+        known_data=known_data_str,
+        recent_history=recent_history_str,
+        user_message=user_message
+    )
 
     payload = Chat(
         messages=[
@@ -521,7 +570,7 @@ def process_step1_query(
 
     # 2. Use LLM to extract entities from user message
     with _make_giga() as giga:
-        new_extracted = _extract_data_with_llm(giga, user_message)
+        new_extracted = _extract_data_with_llm(giga, user_message, conversation_context)
 
     # Merge newly extracted data with existing data
     for key, value in new_extracted.items():
