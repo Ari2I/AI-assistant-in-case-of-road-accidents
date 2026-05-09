@@ -75,7 +75,42 @@ def run_agent(
     """
     history = history or []
 
-    # --- Шаговый режим ---
+    # --- Проверка на общий вопрос (приоритет над шаговым режимом) ---
+    # Даже если мы в step1 или step2, общие вопросы обрабатываются через RAG
+    try:
+        with _make_giga() as giga:
+            classifier_history = build_history(history, component="classifier")
+            meta = meta_classify(giga, query, classifier_history)
+
+            # Если распознан общий вопрос — отвечаем через RAG, не прерывая шаг
+            if meta["category"] == "general_questions":
+                context = get_context_for_category(db, feedback_db, query, "general_questions")
+
+                # План для общего вопроса — без привязки к блоку алгоритма
+                plan = {
+                    "category": "general_questions",
+                    "stage": "general_questions",
+                    "answer_type": "info",
+                    "algorithm_block": -1,
+                }
+
+                generator_history = build_history(
+                    history, component="generator", category="general_questions"
+                )
+
+                answer, _ = _generate_with_selfcheck(
+                    giga, query, context, plan,
+                    algorithm_slice="",  # Нет блока алгоритма для общих вопросов
+                    generator_history=generator_history,
+                )
+
+                return _ok(answer, "llm", "general_questions")
+
+    except Exception as e:
+        print(f"[core] general question check error: {e}")
+        # Продолжаем работу, если проверка на общий вопрос упала
+
+    # --- Шаговый режим (если не общий вопрос) ---
     if current_step in (Step.STEP1, "step1"):
         try:
             with _make_giga() as giga:
@@ -108,8 +143,8 @@ def run_agent(
         with _make_giga() as giga:
 
             # ШАГ 2: Один вызов вместо трёх (filter + classifier + planner)
-            classifier_history = build_history(history, component="classifier")
-            meta = meta_classify(giga, query, classifier_history)
+            category = meta["category"]
+            block = meta["block"]
 
             if not meta["relevant"]:
                 return _ok(
@@ -119,8 +154,6 @@ def run_agent(
                     None,
                 )
 
-            category = meta["category"]
-            block = meta["block"]
 
             # ШАГ 3: RAG — контекст по категории
             context = get_context_for_category(db, feedback_db, query, category)
