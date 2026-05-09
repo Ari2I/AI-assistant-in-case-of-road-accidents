@@ -40,6 +40,23 @@ _UNCERTAINTY_MARKERS = [
 _ALGORITHM = load_algorithm()
 
 
+def _looks_like_step_answer(query: str) -> bool:
+    """
+    Короткий ответ в контексте шага — почти наверняка ответ на вопрос,
+    а не самостоятельный общий вопрос. Пропускаем meta_classify.
+    """
+    q = query.strip().lower().rstrip("!.,")
+    words = q.split()
+    # Короче 4 слов — ответ на вопрос
+    if len(words) <= 3:
+        return True
+    # Явные да/нет с пояснением
+    starts = ("да ", "нет ", "ага ", "нету ", "есть ", "нет,", "да,")
+    if any(q.startswith(s) for s in starts):
+        return True
+    return False
+
+
 def run_agent(
     query: str,
     current_step: str | None = None,
@@ -49,69 +66,52 @@ def run_agent(
     db=None,
     feedback_db=None,
 ) -> dict:
-    """
-    Обрабатывает сообщение пользователя и возвращает ответ.
-
-    Args:
-        query:       сообщение пользователя
-        current_step: текущий шаг ("general", "step1", "step2", "done", "call_gibdd")
-        history:     история диалога [{"query": ..., "answer": ...}, ...]
-        slots:       собранные слоты для step1/step2
-        collected_fields: собранные поля для europrotocol
-        db:          основная ChromaDB (может быть None)
-        feedback_db: база дообучения (может быть None)
-
-    Returns:
-        {
-            "answer":   str,
-            "source":   str,   # "template" | "llm" | "filter" | "error" | "step1" | "step2"
-            "category": str | None,
-            "step_completed": bool,
-            "next_step": str | None,
-            "slots": dict | None,
-            "collected_fields": dict | None,
-            "final_json": dict | None,
-        }
-    """
     history = history or []
 
-    # --- Проверка на общий вопрос (приоритет над шаговым режимом) ---
-    # Даже если мы в step1 или step2, общие вопросы обрабатываются через RAG
-    try:
-        with _make_giga() as giga:
-            classifier_history = build_history(history, component="classifier")
-            meta = meta_classify(giga, query, classifier_history)
+    # ШАГ 0: Шаблоны — всегда первыми
+    template_answer = match_template(query)
+    if template_answer:
+        return _ok(template_answer, "template", None)
 
-            # Если распознан общий вопрос — отвечаем через RAG, не прерывая шаг
-            if meta["category"] == "general_questions":
-                context = get_context_for_category(db, feedback_db, query, "general_questions")
-
-                # План для общего вопроса — без привязки к блоку алгоритма
-                plan = {
-                    "category": "general_questions",
-                    "stage": "general_questions",
-                    "answer_type": "info",
-                    "algorithm_block": -1,
-                }
-
-                generator_history = build_history(
-                    history, component="generator", category="general_questions"
-                )
-
-                answer, _ = _generate_with_selfcheck(
-                    giga, query, context, plan,
-                    algorithm_slice="",  # Нет блока алгоритма для общих вопросов
-                    generator_history=generator_history,
-                )
-
-                return _ok(answer, "llm", "general_questions")
-
-    except Exception as e:
-        print(f"[core] general question check error: {e}")
-        # Продолжаем работу, если проверка на общий вопрос упала
-
-    # --- Шаговый режим (если не общий вопрос) ---
+    # ШАГ 1: Шаговый режим
     if current_step in (Step.STEP1, "step1"):
+        # Короткие ответы — сразу в step1, без meta_classify
+        # Длинные — сначала проверяем на общий вопрос
+        is_general = False
+        general_answer = None
+
+        if not _looks_like_step_answer(query):
+            try:
+                with _make_giga() as giga:
+                    classifier_history = build_history(history, component="classifier")
+                    meta = meta_classify(giga, query, classifier_history)
+                    if meta["category"] == "general_questions":
+                        context = get_context_for_category(
+                            db, feedback_db, query, "general_questions"
+                        )
+                        plan = {
+                            "category": "general_questions",
+                            "stage": "general_questions",
+                            "answer_type": "info",
+                            "algorithm_block": -1,
+                        }
+                        generator_history = build_history(
+                            history, component="generator",
+                            category="general_questions"
+                        )
+                        general_answer, _ = _generate_with_selfcheck(
+                            giga, query, context, plan,
+                            algorithm_slice="",
+                            generator_history=generator_history,
+                        )
+                        is_general = True
+            except Exception as e:
+                print(f"[core] general question check error: {e}")
+
+        if is_general and general_answer:
+            return _ok(general_answer, "llm", "general_questions")
+
+        # Обрабатываем как step1
         try:
             with _make_giga() as giga:
                 result = _run_step1(giga, query, history, slots or {})
@@ -121,6 +121,41 @@ def run_agent(
             return _step_error_response()
 
     if current_step in (Step.STEP2, "step2"):
+        # Аналогично для step2
+        is_general = False
+        general_answer = None
+
+        if not _looks_like_step_answer(query):
+            try:
+                with _make_giga() as giga:
+                    classifier_history = build_history(history, component="classifier")
+                    meta = meta_classify(giga, query, classifier_history)
+                    if meta["category"] == "general_questions":
+                        context = get_context_for_category(
+                            db, feedback_db, query, "general_questions"
+                        )
+                        plan = {
+                            "category": "general_questions",
+                            "stage": "general_questions",
+                            "answer_type": "info",
+                            "algorithm_block": -1,
+                        }
+                        generator_history = build_history(
+                            history, component="generator",
+                            category="general_questions"
+                        )
+                        general_answer, _ = _generate_with_selfcheck(
+                            giga, query, context, plan,
+                            algorithm_slice="",
+                            generator_history=generator_history,
+                        )
+                        is_general = True
+            except Exception as e:
+                print(f"[core] general question check error: {e}")
+
+        if is_general and general_answer:
+            return _ok(general_answer, "llm", "general_questions")
+
         try:
             with _make_giga() as giga:
                 result = _run_step2(
@@ -131,63 +166,6 @@ def run_agent(
         except Exception as e:
             print(f"[core] step2 error: {e}")
             return _step_error_response()
-
-    # --- Иначе: существующий general-пайплайн ---
-
-    # ШАГ 1: Regex-шаблоны (0 токенов, мгновенно)
-    template_answer = match_template(query)
-    if template_answer:
-        return _ok(template_answer, "template", None)
-
-    try:
-        with _make_giga() as giga:
-
-            # ШАГ 2: Один вызов вместо трёх (filter + classifier + planner)
-            category = meta["category"]
-            block = meta["block"]
-
-            if not meta["relevant"]:
-                return _ok(
-                    "Я консультирую только по вопросам ДТП и ОСАГО. "
-                    "Если у вас произошла авария — опишите ситуацию.",
-                    "filter",
-                    None,
-                )
-
-
-            # ШАГ 3: RAG — контекст по категории
-            context = get_context_for_category(db, feedback_db, query, category)
-
-            # ШАГ 4: Только нужный блок алгоритма ± 1 соседний
-            algorithm_slice = get_algorithm_slice(block, window=1)
-
-            plan = {
-                "category": category,
-                "stage": category,
-                "answer_type": "steps",
-                "algorithm_block": block,
-            }
-
-            # ШАГ 5: Генерация с условной самопроверкой
-            generator_history = build_history(
-                history, component="generator", category=category
-            )
-            answer, _ = _generate_with_selfcheck(
-                giga, query, context, plan,
-                algorithm_slice, generator_history,
-            )
-
-            return _ok(answer, "llm", category)
-
-    except Exception as e:
-        print(f"[core] pipeline error: {e}")
-        return _ok(
-            "Произошла техническая ошибка. "
-            "Если вы в опасной ситуации — немедленно звоните 112. "
-            "Попробуйте повторить вопрос через несколько секунд.",
-            "error",
-            None,
-        )
 
 
 def rate_answer(

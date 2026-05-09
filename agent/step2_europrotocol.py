@@ -373,20 +373,33 @@ def _extract_field_data_with_llm(giga: GigaChat, message: str, existing_data: Di
 _FIELD_EXTRACTION_PROMPT = """\
 Извлеки данные для Европротокола из сообщения пользователя.
 
-Уже заполненные поля (не изменяй):
+Описание всех полей (что должно содержаться в каждом):
+- datetime: дата и время ДТП в формате ДД.ММ.ГГГГ ЧЧ:ММ
+- location: адрес места ДТП — город, улица, дом или км трассы
+- participant_a: ФИО и номер полиса ОСАГО участника А
+- participant_b: ФИО и номер полиса ОСАГО участника Б
+- circumstances: какие манёвры выполняли автомобили (кто куда ехал, поворачивал, стоял)
+- damage_description: перечень видимых повреждений каждого авто (вмятина, царапина, трещина)
+- scheme: схема расположения авто ПОСЛЕ удара и направление движения (где стояли, с какой стороны столкнулись)
+- signatures: подтверждение того, что оба водителя поставят подписи
+
+Уже заполненные поля (не перезаписывай):
 {filled_fields}
 
-Доступные незаполненные поля:
-{empty_fields}
+Поле, которое сейчас ожидается от пользователя: {current_field}
+Остальные незаполненные поля: {empty_fields}
 
-Сообщение: "{message}"
+Сообщение пользователя: "{message}"
 
-Верни ТОЛЬКО валидный JSON без пояснений.
-Заполняй ТОЛЬКО явно указанные в сообщении поля.
-Незаполненные — null.
+ПРАВИЛА:
+- Если сообщение содержит данные для поля "{current_field}" — обязательно извлеки их.
+- Если сообщение содержит данные и для других незаполненных полей — тоже извлеки.
+- Не перезаписывай уже заполненные поля.
+- Если данных для поля нет — верни null.
+- Верни ТОЛЬКО валидный JSON без пояснений и markdown.
 
-Доступные ключи: datetime, location, participant_a, participant_b,
-circumstances, damage_description, scheme, signatures.
+Пример ответа:
+{{"scheme": "Авто А стояло у въезда, Авто Б въехало в правый бок"}}
 """
 
 def _generate_field_instruction(field_id: str) -> tuple[str, str]:
@@ -404,7 +417,7 @@ def _map_slots_to_fields(slots: dict, history: list) -> dict:
     return {}
 
 
-def _extract_fields_llm(giga, message: str, existing: dict) -> dict:
+def _extract_fields_llm(giga, message: str, existing: dict, current_field: str = "") -> dict:
     """
     Вызывает GigaChat для извлечения полей Европротокола.
     При ошибке парсинга — возвращает {}.
@@ -413,39 +426,60 @@ def _extract_fields_llm(giga, message: str, existing: dict) -> dict:
     from gigachat.models import Chat, Messages, MessagesRole
 
     filled_str = "\n".join(f"- {k}: {v}" for k, v in existing.items()) \
-                 if existing else "(нет заполненных полей)"
-    empty_keys = [f for f in FIELDS_ORDER if not existing.get(f)]
-    empty_str = ", ".join(empty_keys) if empty_keys else "(все заполнены)"
+        if existing else "(нет заполненных полей)"
+
+    all_empty = [f for f in FIELDS_ORDER if not existing.get(f)]
+    # Убираем текущее поле из списка "остальных", чтобы не дублировать
+    other_empty = [f for f in all_empty if f != current_field]
+    empty_str = ", ".join(other_empty) if other_empty else "(только текущее поле)"
 
     prompt = _FIELD_EXTRACTION_PROMPT.format(
         filled_fields=filled_str,
+        current_field=current_field or "не определено",
         empty_fields=empty_str,
         message=message,
     )
 
-    try:
-        payload = Chat(
-            messages=[
-                Messages(role=MessagesRole.SYSTEM, content="Ты — структурированный экстрактор данных для Европротокола. Отвечай только JSON."),
-                Messages(role=MessagesRole.USER, content=prompt),
-            ],
-            temperature=0.0,
-        )
-        response = giga.chat(payload)
-        content = response.choices[0].message.content.strip()
+    for attempt in range(2):  # одна повторная попытка при ошибке
+        try:
+            payload = Chat(
+                messages=[
+                    Messages(
+                        role=MessagesRole.SYSTEM,
+                        content=(
+                            "Ты — структурированный экстрактор данных для Европротокола. "
+                            "Отвечай только JSON. Никаких пояснений."
+                        )
+                    ),
+                    Messages(role=MessagesRole.USER, content=prompt),
+                ],
+                temperature=0.0,
+            )
+            response = giga.chat(payload)
+            content = response.choices[0].message.content.strip()
 
-        # Remove markdown code blocks if present
-        if content.startswith("```"):
-            content = content.split("```")[1]
-            if content.startswith("json"):
-                content = content[4:]
-        content = content.strip()
+            # Убираем markdown-обёртку если есть
+            if "```" in content:
+                parts = content.split("```")
+                for part in parts:
+                    stripped = part.strip()
+                    if stripped.startswith("{"):
+                        content = stripped
+                        break
 
-        extracted = json.loads(content)
-        return {k: v for k, v in extracted.items() if v is not None}
-    except Exception as e:
-        print(f"[step2] field extraction error: {e}")
-        return {}
+            extracted = json.loads(content)
+            result = {k: v for k, v in extracted.items() if v is not None}
+
+            if result:  # если что-то извлекли — успех
+                return result
+            # если пустой результат — попробуем ещё раз (может LLM вернула всё null)
+
+        except json.JSONDecodeError as e:
+            print(f"[step2] JSON parse error (attempt {attempt + 1}): {e}, content: {content[:100]}")
+        except Exception as e:
+            print(f"[step2] field extraction error (attempt {attempt + 1}): {e}")
+
+    return {}
 
 
 def process_step2_with_llm(
@@ -455,50 +489,25 @@ def process_step2_with_llm(
     slots: dict,
     collected_fields: dict,
 ) -> StepResponse:
-    """
-    Основная функция step2. Принимает активный клиент GigaChat.
 
-    1. При первом вызове (collected_fields пустой):
-       Предзаполняет поля из slots через _map_slots_to_fields(slots, history).
-
-    2. Вызывает GigaChat для извлечения полей из query.
-       При ошибке — collected_fields без изменений.
-
-    3. Обновляет collected_fields (None не затирает заполненное).
-
-    4. Находит первое незаполненное поле из FIELDS_ORDER.
-
-    5. Все поля заполнены:
-       step_completed=True, next_step=Step.DONE
-       final_json = {
-           "type": "europrotocol",
-           "status": "ready_for_pdf",
-           "data": collected_fields
-       }
-       answer = инструкция по отправке в страховую (5 рабочих дней)
-
-    6. Иначе:
-       Генерирует подсказку + вопрос для текущего поля.
-       step_completed=False, next_step=Step.STEP2
-
-    Возвращает StepResponse (из agent.step_types).
-    """
-
-
-    # Предзаполнение из данных step1
     if not collected_fields:
         collected_fields = _map_slots_to_fields(slots, history)
 
-    # Извлечение новых полей через LLM
+    # Определяем текущее ожидаемое поле ДО извлечения — передаём как подсказку
+    current_field = next(
+        (f for f in FIELDS_ORDER if not collected_fields.get(f)),
+        None
+    )
+
     try:
-        new_data = _extract_fields_llm(giga, query, collected_fields)
+        new_data = _extract_fields_llm(giga, query, collected_fields, current_field or "")
         for k, v in new_data.items():
             if v is not None:
                 collected_fields[k] = v
     except Exception as e:
         print(f"[step2] field extraction error: {e}")
 
-    # Следующее незаполненное поле
+    # Пересчитываем текущее поле после обновления
     current_field = next(
         (f for f in FIELDS_ORDER if not collected_fields.get(f)),
         None
