@@ -24,15 +24,12 @@ load_dotenv(BASE_DIR / '.env')
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'django-insecure-local-dev-key-please-change')
-# SECRET_KEY = 'django-insecure-_9r9d1y%t1p#u(7#93z%!61fgvg256nul2y!mo!q*g+@1boa9%'
+SECRET_KEY = os.getenv('DJANGO_SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = False
 
-# ALLOWED_HOSTS = ['ваш_логин.pythonanywhere.com', 'localhost', '127.0.0.1']
-# ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', '*').split(',') # Для локального запуска через docker
-ALLOWED_HOSTS = ['ваш_ip', 'ваш_домен.ru', 'localhost', '127.0.0.1']
+ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS').split(',')
 
 
 # Application definition
