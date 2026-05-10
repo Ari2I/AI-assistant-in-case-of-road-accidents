@@ -5,8 +5,9 @@ Uses context from Step 1 to skip known fields.
 Uses LLM for intelligent field extraction instead of keyword matching.
 """
 
-from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+from __future__ import annotations
+
+import json
 
 from gigachat import GigaChat
 from gigachat.models import Chat, Messages, MessagesRole
@@ -20,8 +21,12 @@ LIMIT_WITH_APP_NO_DISAGREEMENT = 400_000
 LIMIT_WITH_APP_DISAGREEMENT = 200_000
 
 
+# ---------------------------------------------------------------------------
+# Проверка возможности Европротокола
+# ---------------------------------------------------------------------------
+
 class StopFactor:
-    """Класс стоп-фактора для проверки возможности Европротокола."""
+    """Стоп-фактор, блокирующий или ограничивающий оформление Европротокола."""
 
     def __init__(self, code: str, message: str, severity: str):
         self.code = code
@@ -29,12 +34,7 @@ class StopFactor:
         self.severity = severity
 
     def to_dict(self) -> dict:
-        """Возвращает словарь с полями стоп-фактора."""
-        return {
-            "code": self.code,
-            "message": self.message,
-            "severity": self.severity,
-        }
+        return {"code": self.code, "message": self.message, "severity": self.severity}
 
 
 class EuroprotocolCheckResult:
@@ -55,10 +55,12 @@ class EuroprotocolCheckResult:
         self.limits = limits
 
     def to_dict(self) -> dict:
-        """Возвращает словарь с полями результата."""
         return {
             "is_possible": self.is_possible,
-            "stop_factors": [sf.to_dict() if hasattr(sf, 'to_dict') else sf for sf in self.stop_factors],
+            "stop_factors": [
+                sf.to_dict() if hasattr(sf, "to_dict") else sf
+                for sf in self.stop_factors
+            ],
             "recommendation": self.recommendation,
             "next_step": self.next_step,
             "limits": self.limits,
@@ -69,22 +71,16 @@ def validate_slots_for_step2(slots: dict) -> tuple[bool, list[str]]:
     """
     Валидирует слоты для Step 2.
 
-    Обязательные ключи: victims, participants_count, osago_both, disagreement
-    - victims: bool или None (не str)
-    - participants_count: int или None (не str)
-    - osago_both: bool или None
-    - disagreement: bool или None
-
-    None значения допустимы.
+    Обязательные ключи: victims, participants_count, osago_both, disagreement.
+    None-значения допустимы; проверяются только типы ненулевых значений.
 
     Возвращает:
         (True, []) если валидно
         (False, [список ошибок]) иначе
     """
     required_keys = ["victims", "participants_count", "osago_both", "disagreement"]
-    errors = []
+    errors: list[str] = []
 
-    # Проверка наличия всех ключей
     for key in required_keys:
         if key not in slots:
             errors.append(f"Missing required slot: {key}")
@@ -92,12 +88,13 @@ def validate_slots_for_step2(slots: dict) -> tuple[bool, list[str]]:
     if errors:
         return (False, errors)
 
-    # Проверка типов
     if slots["victims"] is not None and not isinstance(slots["victims"], bool):
         errors.append(f"victims must be bool or None, got {type(slots['victims']).__name__}")
 
     if slots["participants_count"] is not None and not isinstance(slots["participants_count"], int):
-        errors.append(f"participants_count must be int or None, got {type(slots['participants_count']).__name__}")
+        errors.append(
+            f"participants_count must be int or None, got {type(slots['participants_count']).__name__}"
+        )
 
     if slots["osago_both"] is not None and not isinstance(slots["osago_both"], bool):
         errors.append(f"osago_both must be bool or None, got {type(slots['osago_both']).__name__}")
@@ -105,101 +102,65 @@ def validate_slots_for_step2(slots: dict) -> tuple[bool, list[str]]:
     if slots["disagreement"] is not None and not isinstance(slots["disagreement"], bool):
         errors.append(f"disagreement must be bool or None, got {type(slots['disagreement']).__name__}")
 
-    if errors:
-        return (False, errors)
+    return (not bool(errors), errors)
 
-    return (True, [])
 
 def process_step2_check(slots: dict, has_app: bool) -> EuroprotocolCheckResult:
     """
-    Проверяет возможность оформления Европротокола.
+    Проверяет возможность оформления Европротокола на основе собранных слотов.
 
-    Логика:
-    - Собирает все критические стоп-факторы (не останавливается на первом):
-      * victims == True -> StopFactor("victims", severity="critical")
-      * participants_count > 2 -> StopFactor("participants_3plus", severity="critical")
-      * participants_count == 1 -> StopFactor("participants_1", severity="critical")
-      * osago_both == False -> StopFactor("no_osago", severity="critical")
-    - Если есть критические стоп-факторы: is_possible=False, next_step="call_gibdd"
-    - Иначе если disagreement == True и has_app == False:
-        is_possible="conditional", рекомендация упоминает приложения
-    - Иначе если disagreement == True и has_app == True:
-        is_possible=True, limits={"base": LIMIT_WITH_APP_DISAGREEMENT}
-    - Иначе (нет разногласий):
-        is_possible=True, limits зависит от has_app
-
-    None-значения слотов не считаются стоп-факторами.
+    Логика (None-значения не считаются стоп-факторами):
+      - Собирает все критические стоп-факторы (victims, participants, osago).
+      - Если критические факторы есть → is_possible=False, next_step="call_gibdd".
+      - Если разногласия есть, но нет приложения → is_possible="conditional".
+      - Если разногласия есть + есть приложение → is_possible=True, лимит 200к.
+      - Без разногласий → is_possible=True, лимит зависит от has_app.
     """
-    stop_factors = []
+    stop_factors: list[StopFactor] = []
 
-    # Сбор критических стоп-факторов
     if slots.get("victims") is True:
-        stop_factors.append(StopFactor(
-            code="victims",
-            message="Есть пострадавшие",
-            severity="critical",
-        ))
+        stop_factors.append(StopFactor("victims", "Есть пострадавшие", "critical"))
 
     p_count = slots.get("participants_count")
     if p_count is not None:
         if p_count > 2:
-            stop_factors.append(StopFactor(
-                code="participants_3plus",
-                message="Участников больше двух",
-                severity="critical",
-            ))
+            stop_factors.append(StopFactor("participants_3plus", "Участников больше двух", "critical"))
         elif p_count == 1:
-            stop_factors.append(StopFactor(
-                code="participants_1",
-                message="ДТП с одним участником",
-                severity="critical",
-            ))
+            stop_factors.append(StopFactor("participants_1", "ДТП с одним участником", "critical"))
 
     if slots.get("osago_both") is False:
-        stop_factors.append(StopFactor(
-            code="no_osago",
-            message="Нет ОСАГО у одного из участников",
-            severity="critical",
-        ))
+        stop_factors.append(StopFactor("no_osago", "Нет ОСАГО у одного из участников", "critical"))
 
-    # Если есть критические стоп-факторы
     if stop_factors:
-        # Формирование рекомендации
-        rec_parts = []
+        parts = []
         for sf in stop_factors:
             if sf.code == "victims":
-                rec_parts.append("Немедленно вызовите скорую (103) и ГИБДД (102).")
+                parts.append("Немедленно вызовите скорую (103) и ГИБДД (102).")
             else:
-                rec_parts.append("Вызовите ГИБДД (102).")
-        recommendation = " ".join(rec_parts)
-
+                parts.append("Вызовите ГИБДД (102).")
         return EuroprotocolCheckResult(
             is_possible=False,
             stop_factors=stop_factors,
-            recommendation=recommendation,
+            recommendation=" ".join(parts),
             next_step="call_gibdd",
             limits={},
         )
 
-    # Проверка разногласий
     disagreement = slots.get("disagreement")
 
-    if disagreement is True and has_app is False:
-        # Разногласия без приложения - условно возможен
+    if disagreement is True and not has_app:
         return EuroprotocolCheckResult(
             is_possible="conditional",
-            stop_factors=[StopFactor(
-                code="disagreement_no_app",
-                message="Разногласия без приложения",
-                severity="warning",
-            )],
-            recommendation="При разногласиях рекомендуется использовать приложение «Помощник ОСАГО» или «Госуслуги Авто» для фиксации ДТП.",
+            stop_factors=[StopFactor("disagreement_no_app", "Разногласия без приложения", "warning")],
+            recommendation=(
+                "При разногласиях рекомендуется использовать приложение "
+                "«Помощник ОСАГО» или «Госуслуги Авто» для фиксации ДТП."
+            ),
             next_step="step3_fixation_with_disagreement",
             limits={"base": 0, "with_app": LIMIT_WITH_APP_DISAGREEMENT},
         )
 
-    if disagreement is True and has_app is True:
-        # Разногласия с приложением - возможен, лимит 200к
+    if disagreement is True and has_app:
         return EuroprotocolCheckResult(
             is_possible=True,
             stop_factors=[],
@@ -211,10 +172,15 @@ def process_step2_check(slots: dict, has_app: bool) -> EuroprotocolCheckResult:
     # Нет разногласий
     if has_app:
         limit = LIMIT_WITH_APP_NO_DISAGREEMENT
-        recommendation = f"Европротокол возможен. С приложением максимальная выплата до {limit // 1000} 000 руб."
+        recommendation = (
+            f"Европротокол возможен. С приложением максимальная выплата до {limit // 1000} 000 руб."
+        )
     else:
         limit = LIMIT_BASE
-        recommendation = f"Европротокол возможен. Максимальная выплата до {limit // 1000} 000 руб. Рекомендуется использовать приложение для увеличения лимита до 400 000 руб."
+        recommendation = (
+            f"Европротокол возможен. Максимальная выплата до {limit // 1000} 000 руб. "
+            "Рекомендуется использовать приложение для увеличения лимита до 400 000 руб."
+        )
 
     return EuroprotocolCheckResult(
         is_possible=True,
@@ -225,150 +191,71 @@ def process_step2_check(slots: dict, has_app: bool) -> EuroprotocolCheckResult:
     )
 
 
-class EuroprotocolField(BaseModel):
-    """Structure for a single field in the protocol."""
-    field_id: str
-    value: Optional[str] = None
-    instruction: str = ""
-    is_complete: bool = False
+# ---------------------------------------------------------------------------
+# Заполнение полей Европротокола
+# ---------------------------------------------------------------------------
 
-class Step2Result(BaseModel):
-    """Result of Step 2 processing."""
-    finished: bool = False
-    next_step: str = "step2_fill_europrotocol"
-    current_field: str = ""
-    instruction: str = ""
-    question: str = ""
-    collected_data: Dict[str, Any] = Field(default_factory=dict)
-    final_json: Optional[Dict[str, Any]] = None
-
-# Definition of fields to collect
-FIELDS_CONFIG = {
+FIELDS_CONFIG: dict[str, dict[str, str]] = {
     "datetime": {
         "prompt": "Когда произошло ДТП? (Дата и точное время)",
-        "instruction": "Укажите дату и время в формате ДД.ММ.ГГГГ ЧЧ:ММ. Это важно для фиксации времени обращения."
+        "instruction": (
+            "Укажите дату и время в формате ДД.ММ.ГГГГ ЧЧ:ММ. "
+            "Это важно для фиксации времени обращения."
+        ),
     },
     "location": {
         "prompt": "Где точно произошло ДТП? (Адрес, км трассы, ориентиры)",
-        "instruction": "Пишите полный адрес: город, улица, дом. Если трасса — название и километр. Укажите ближайшие ориентиры (магазин, светофор)."
+        "instruction": (
+            "Пишите полный адрес: город, улица, дом. Если трасса — название и километр. "
+            "Укажите ближайшие ориентиры (магазин, светофор)."
+        ),
     },
     "participant_a": {
         "prompt": "Данные владельца автомобиля А (ФИО, номер полиса ОСАГО).",
-        "instruction": "Нужны ФИО собственника ТС и номер полиса ОСАГО. Если вы водитель, но не собственник, укажите данные собственника."
+        "instruction": (
+            "Нужны ФИО собственника ТС и номер полиса ОСАГО. "
+            "Если вы водитель, но не собственник, укажите данные собственника."
+        ),
     },
     "participant_b": {
         "prompt": "Данные владельца автомобиля Б (ФИО, номер полиса ОСАГО).",
-        "instruction": "Те же данные для второго участника. Сверьте номер полиса с базой РСА, если есть сомнения."
+        "instruction": (
+            "Те же данные для второго участника. "
+            "Сверьте номер полиса с базой РСА, если есть сомнения."
+        ),
     },
     "circumstances": {
-        "prompt": "Обстоятельства ДТП: какие маневры выполняли автомобили? (Например: обгон, разворот, стоянка)",
-        "instruction": "Кратко опишите маневры. Пример: 'Авто А двигалось прямо, Авто Б поворачивало налево'. Отметьте знаки и сигналы светофора, если были."
+        "prompt": "Обстоятельства ДТП: какие маневры выполняли автомобили?",
+        "instruction": (
+            "Кратко опишите маневры. Пример: «Авто А двигалось прямо, Авто Б поворачивало налево». "
+            "Отметьте знаки и сигналы светофора, если были."
+        ),
     },
     "damage_description": {
         "prompt": "Опишите видимые повреждения обоих автомобилей.",
-        "instruction": "Перечислите детали: бампер, крыло, дверь, фара. Характер повреждения: царапина, вмятина, трещина. Не пишите скрытые повреждения."
+        "instruction": (
+            "Перечислите детали: бампер, крыло, дверь, фара. "
+            "Характер повреждения: царапина, вмятина, трещина. "
+            "Не пишите скрытые повреждения."
+        ),
     },
     "scheme": {
         "prompt": "Схема ДТП. (Опишите словами расположение авто после удара и направление движения)",
-        "instruction": "Опишите схему словами: 'Авто А стояло у края дороги, Авто Б наехало на него сзади'. Позже вы нарисуете это в бланке."
+        "instruction": (
+            "Опишите схему словами: «Авто А стояло у края дороги, Авто Б наехало на него сзади». "
+            "Позже вы нарисуете это в бланке."
+        ),
     },
     "signatures": {
         "prompt": "Подтвердите, что оба водителя подпишут извещение с обратной стороны.",
-        "instruction": "Важно: оба водителя должны поставить подписи на лицевой стороне (в колонках 'А' и 'Б') и на обороте бланка."
-    }
+        "instruction": (
+            "Важно: оба водителя должны поставить подписи на лицевой стороне "
+            "(в колонках «А» и «Б») и на обороте бланка."
+        ),
+    },
 }
 
 FIELDS_ORDER = list(FIELDS_CONFIG.keys())
-
-
-STEP2_EXTRACTION_PROMPT = """\
-Ты — ассистент по заполнению Европротокола. Твоя задача: извлечь из сообщения пользователя данные для следующих полей (если они упоминаются):
-
-Доступные поля:
-- datetime: дата и время ДТП
-- location: место ДТП (адрес, км трассы, ориентиры)
-- participant_a: данные владельца автомобиля А (ФИО, номер полиса ОСАГО)
-- participant_b: данные владельца автомобиля Б (ФИО, номер полиса ОСАГО)
-- circumstances: обстоятельства ДТП (маневры автомобилей)
-- damage_description: описание видимых повреждений
-- scheme: схема ДТП (расположение автомобилей)
-- signatures: подтверждение о подписях
-
-ПРАВИЛА:
-- Извлекай ТОЛЬКО явные данные из сообщения. Не додумывай.
-- Если поле уже заполнено в существующих данных (показаны ниже), не извлекай его повторно.
-- Возвращай ответ ТОЛЬКО в формате JSON без лишних комментариев.
-- Используй null для полей, которые не удалось извлечь или которые уже заполнены.
-
-Существующие данные (уже заполненные поля):
-{existing_data}
-
-Сообщение пользователя:
-{user_message}
-
-Пример ответа:
-{{
-    "location": "г. Москва, ул. Ленина, д. 10",
-    "datetime": "15.01.2024 14:30"
-}}
-"""
-
-
-def _make_giga() -> GigaChat:
-    """Create GigaChat client instance."""
-    return GigaChat(
-        credentials=GIGA_AUTH,
-        verify_ssl_certs=False,
-        scope="GIGACHAT_API_B2B",
-    )
-
-
-def _extract_field_data_with_llm(giga: GigaChat, message: str, existing_data: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Use LLM to extract data for any pending fields from the user message.
-    Returns only new/updated fields.
-    """
-    # Format existing data for prompt
-    if existing_data:
-        existing_str = "\n".join(f"- {k}: {v}" for k, v in existing_data.items())
-    else:
-        existing_str = "(нет заполненных полей)"
-
-    prompt = STEP2_EXTRACTION_PROMPT.format(
-        existing_data=existing_str,
-        user_message=message
-    )
-
-    payload = Chat(
-        messages=[
-            Messages(role=MessagesRole.SYSTEM, content="Ты — структурированный экстрактор данных для Европротокола. Отвечай только JSON."),
-            Messages(role=MessagesRole.USER, content=prompt),
-        ],
-        temperature=0.0,
-    )
-
-    try:
-        response = giga.chat(payload)
-        content = response.choices[0].message.content.strip()
-
-        # Parse JSON response
-        import json
-        # Remove markdown code blocks if present
-        if content.startswith("```"):
-            content = content.split("```")[1]
-            if content.startswith("json"):
-                content = content[4:]
-        content = content.strip()
-
-        extracted = json.loads(content)
-        # Filter out None values and already filled fields
-        return {
-            k: v for k, v in extracted.items()
-            if v is not None and k not in existing_data
-        }
-    except Exception as e:
-        print(f"[step2] LLM extraction error: {e}")
-        return {}
 
 _FIELD_EXTRACTION_PROMPT = """\
 Извлеки данные для Европротокола из сообщения пользователя.
@@ -402,34 +289,37 @@ _FIELD_EXTRACTION_PROMPT = """\
 {{"scheme": "Авто А стояло у въезда, Авто Б въехало в правый бок"}}
 """
 
+
 def _generate_field_instruction(field_id: str) -> tuple[str, str]:
-    """Get instruction and question for a specific field."""
+    """Возвращает (инструкция, вопрос) для конкретного поля."""
     config = FIELDS_CONFIG.get(field_id, {})
     return config.get("instruction", ""), config.get("prompt", "")
+
 
 def _map_slots_to_fields(slots: dict, history: list) -> dict:
     """
     Переносит релевантные данные из step1 в поля step2.
-    Базовая версия: возвращает пустой dict.
-    Расширенная версия может анализировать history на наличие
-    адреса, времени, марок авто и предзаполнять соответствующие поля.
+    Базовая версия возвращает пустой dict.
     """
     return {}
 
 
-def _extract_fields_llm(giga, message: str, existing: dict, current_field: str = "") -> dict:
+def _extract_fields_llm(
+    giga: GigaChat,
+    message: str,
+    existing: dict,
+    current_field: str = "",
+) -> dict:
     """
     Вызывает GigaChat для извлечения полей Европротокола.
     При ошибке парсинга — возвращает {}.
+    Делает до 2 попыток при пустом результате.
     """
-    import json
-    from gigachat.models import Chat, Messages, MessagesRole
-
-    filled_str = "\n".join(f"- {k}: {v}" for k, v in existing.items()) \
+    filled_str = (
+        "\n".join(f"- {k}: {v}" for k, v in existing.items())
         if existing else "(нет заполненных полей)"
-
+    )
     all_empty = [f for f in FIELDS_ORDER if not existing.get(f)]
-    # Убираем текущее поле из списка "остальных", чтобы не дублировать
     other_empty = [f for f in all_empty if f != current_field]
     empty_str = ", ".join(other_empty) if other_empty else "(только текущее поле)"
 
@@ -440,7 +330,7 @@ def _extract_fields_llm(giga, message: str, existing: dict, current_field: str =
         message=message,
     )
 
-    for attempt in range(2):  # одна повторная попытка при ошибке
+    for attempt in range(2):
         try:
             payload = Chat(
                 messages=[
@@ -449,7 +339,7 @@ def _extract_fields_llm(giga, message: str, existing: dict, current_field: str =
                         content=(
                             "Ты — структурированный экстрактор данных для Европротокола. "
                             "Отвечай только JSON. Никаких пояснений."
-                        )
+                        ),
                     ),
                     Messages(role=MessagesRole.USER, content=prompt),
                 ],
@@ -458,10 +348,8 @@ def _extract_fields_llm(giga, message: str, existing: dict, current_field: str =
             response = giga.chat(payload)
             content = response.choices[0].message.content.strip()
 
-            # Убираем markdown-обёртку если есть
             if "```" in content:
-                parts = content.split("```")
-                for part in parts:
+                for part in content.split("```"):
                     stripped = part.strip()
                     if stripped.startswith("{"):
                         content = stripped
@@ -469,10 +357,8 @@ def _extract_fields_llm(giga, message: str, existing: dict, current_field: str =
 
             extracted = json.loads(content)
             result = {k: v for k, v in extracted.items() if v is not None}
-
-            if result:  # если что-то извлекли — успех
+            if result:
                 return result
-            # если пустой результат — попробуем ещё раз (может LLM вернула всё null)
 
         except json.JSONDecodeError as e:
             print(f"[step2] JSON parse error (attempt {attempt + 1}): {e}, content: {content[:100]}")
@@ -482,21 +368,28 @@ def _extract_fields_llm(giga, message: str, existing: dict, current_field: str =
     return {}
 
 
+# ---------------------------------------------------------------------------
+# Главная функция для шагового режима
+# ---------------------------------------------------------------------------
+
 def process_step2_with_llm(
-    giga,
+    giga: GigaChat,
     query: str,
     history: list,
     slots: dict,
     collected_fields: dict,
 ) -> StepResponse:
-
+    """
+    Обрабатывает один шаг заполнения Европротокола.
+    Извлекает данные из сообщения, обновляет собранные поля
+    и возвращает инструкцию по следующему полю или финальный JSON.
+    """
     if not collected_fields:
         collected_fields = _map_slots_to_fields(slots, history)
 
-    # Определяем текущее ожидаемое поле ДО извлечения — передаём как подсказку
+    # Определяем текущее поле ДО извлечения — передаём как подсказку LLM
     current_field = next(
-        (f for f in FIELDS_ORDER if not collected_fields.get(f)),
-        None
+        (f for f in FIELDS_ORDER if not collected_fields.get(f)), None
     )
 
     try:
@@ -509,8 +402,7 @@ def process_step2_with_llm(
 
     # Пересчитываем текущее поле после обновления
     current_field = next(
-        (f for f in FIELDS_ORDER if not collected_fields.get(f)),
-        None
+        (f for f in FIELDS_ORDER if not collected_fields.get(f)), None
     )
 
     if current_field is None:
@@ -537,65 +429,4 @@ def process_step2_with_llm(
         step_completed=False,
         next_step=Step.STEP2,
         collected_fields=collected_fields,
-    )
-
-def process_step2_fill(
-    user_message: str,
-    conversation_context: Dict[str, Any]
-) -> Step2Result:
-    """
-    Process Step 2: Fill protocol fields.
-    Merges new data with context. Moves to next field if current is filled.
-    """
-    # Load existing data
-    collected = conversation_context.get("step2_data", {})
-    # Merge data from Step 1 if available (e.g., car models, circumstances)
-    step1_data = conversation_context.get("step1_data", {})
-    if step1_data:
-        # Map relevant Step 1 data to Step 2 fields if logic allows
-        pass
-
-    # 1. Use LLM to extract data from current message for ANY missing field
-    with _make_giga() as giga:
-        new_data = _extract_field_data_with_llm(giga, user_message, collected)
-    collected.update(new_data)
-
-    # 2. Find the first incomplete field
-    current_field = None
-    for field in FIELDS_ORDER:
-        if field not in collected or not collected[field]:
-            current_field = field
-            break
-
-    # 3. If all fields are filled -> Finish
-    if current_field is None:
-        # Construct final JSON for backend
-        final_payload = {
-            "type": "europrotocol",
-            "status": "ready_for_pdf",
-            "data": collected
-        }
-        return Step2Result(
-            finished=True,
-            next_step="generate_pdf",
-            instruction="✅ Протокол сформирован! Данные переданы для генерации PDF.",
-            final_json=final_payload,
-            collected_data=collected
-        )
-
-    # 4. Generate instruction for the current missing field
-    instr, question = _generate_field_instruction(current_field)
-
-    # If user just provided data for THIS field in the message, acknowledge it
-    ack = ""
-    if current_field in new_data:
-        ack = f"Принято: {new_data[current_field]}. \n\n"
-
-    return Step2Result(
-        finished=False,
-        next_step="step2_fill_europrotocol",
-        current_field=current_field,
-        instruction=f"{ack}{instr}",
-        question=question,
-        collected_data=collected
     )

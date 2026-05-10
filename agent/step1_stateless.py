@@ -5,9 +5,9 @@ Supports flexible input (multiple slots per message) and context passing.
 """
 
 from __future__ import annotations
-from typing import Any, Dict, List, Optional, Tuple
-from pydantic import BaseModel, Field
+
 import json
+from typing import Any
 
 from gigachat import GigaChat
 from gigachat.models import Chat, Messages, MessagesRole
@@ -45,6 +45,12 @@ _SLOT_EXTRACTION_PROMPT = """\
 КРИТИЧЕСКИ ВАЖНО: заполняй ТОЛЬКО то, что явно сказано.
 Не делай выводов и не додумывай.
 
+
+ВАЖНО ПРО РАЗНОГЛАСИЯ (disagreement):
+- disagreement = true ТОЛЬКО если водители спорят об обстоятельствах ДТП (кто виноват, как произошло, кто куда ехал)
+- Проблемы с полисом ОСАГО (не вписан водитель, просрочен полис, поддельный полис) — это НЕ разногласия!
+- Если пользователь говорит про ОСАГО, но НЕ упоминает спор об обстоятельствах — disagreement = null
+
 --- ПРИМЕРЫ ---
 
 Вопрос был про: victims (пострадавшие)
@@ -72,6 +78,20 @@ _SLOT_EXTRACTION_PROMPT = """\
 Вопрос был про: victims (пострадавшие)
 Сообщение: "0"
 Ответ: {{"safety_confirmed": null, "emergency_sign": null, "victims": false, "participants_count": null, "osago_both": null, "disagreement": null}}
+
+Вопрос был про: osago_both (наличие ОСАГО)
+Сообщение: "да, они у нас есть, но второй водитель не вписан в него"
+Ответ: {{"safety_confirmed": null, "emergency_sign": null, "victims": null, "participants_count": null, "osago_both": falce, "disagreement": null}}
+Пояснение: проблема с полисом (не вписан водитель) — это НЕ разногласия об обстоятельствах ДТП.
+
+Вопрос был про: osago_both (наличие ОСАГО)
+Сообщение: "у меня есть, а у второго нет полиса"
+Ответ: {{"safety_confirmed": null, "emergency_sign": null, "victims": null, "participants_count": null, "osago_both": false, "disagreement": null}}
+Пояснение: если водитель не вписан в полис ОСАГО, полис для него не действует — это равносильно отсутствию ОСАГО. Проблема с полисом — это НЕ разногласия об обстоятельствах ДТП.
+
+Вопрос был про: disagreement (разногласия)
+Сообщение: "мы спорим кто виноват"
+Ответ: {{"safety_confirmed": null, "emergency_sign": null, "victims": null, "participants_count": null, "osago_both": null, "disagreement": true}}
 
 --- КОНЕЦ ПРИМЕРОВ ---
 
@@ -101,205 +121,6 @@ _SLOT_DESCRIPTIONS = {
     "disagreement": "наличие разногласий об обстоятельствах ДТП",
 }
 
-
-def validate_slots(slots: dict) -> tuple[bool, list[str]]:
-    """
-    Проверяет наличие всех обязательных ключей и их типы.
-
-    Обязательные ключи: safety_confirmed, emergency_sign, victims,
-                        participants_count, osago_both, disagreement
-
-    Возвращает:
-        (True, []) если валидно
-        (False, [список ошибок]) иначе
-    """
-    required_keys = [
-        "safety_confirmed",
-        "emergency_sign",
-        "victims",
-        "participants_count",
-        "osago_both",
-        "disagreement",
-    ]
-    errors = []
-
-    # Проверка наличия всех ключей
-    for key in required_keys:
-        if key not in slots:
-            errors.append(f"Missing required slot: {key}")
-
-    if errors:
-        return (False, errors)
-
-    # Проверка типов
-    bool_fields = ["safety_confirmed", "emergency_sign", "victims", "osago_both", "disagreement"]
-    for key in bool_fields:
-        value = slots[key]
-        if value is not None and not isinstance(value, bool):
-            errors.append(f"{key} must be bool or None, got {type(value).__name__}")
-
-    if slots["participants_count"] is not None and not isinstance(slots["participants_count"], int):
-        errors.append(f"participants_count must be int or None, got {type(slots['participants_count']).__name__}")
-
-    if errors:
-        return (False, errors)
-
-    return (True, [])
-
-
-def _init_slots(initial: dict) -> dict:
-    result = {
-        "safety_confirmed": None,
-        "emergency_sign": None,
-        "victims": None,
-        "participants_count": None,
-        "osago_both": None,
-        "disagreement": None,
-    }
-    # Основные слоты
-    for key in SLOT_ORDER:
-        if key in initial:
-            result[key] = initial[key]
-    # Дополнительные флаги (disagreement_help_offered и т.д.)
-    for key, value in initial.items():
-        if key not in result:
-            result[key] = value
-    return result
-
-
-def _get_empty_slots(slots: dict) -> list[str]:
-    """
-    Возвращает список ключей со значением None.
-    Порядок соответствует SLOT_ORDER.
-    """
-    return [key for key in SLOT_ORDER if slots.get(key) is None]
-
-
-def _slot_to_block(slot: str) -> int:
-    """
-    Маппинг слота на номер блока алгоритма.
-    safety_confirmed->0, emergency_sign->1, victims->2,
-    participants_count->3, osago_both->4, disagreement->5
-    Неизвестный слот -> 0
-    """
-    mapping = {
-        "safety_confirmed": 0,
-        "emergency_sign": 1,
-        "victims": 2,
-        "participants_count": 3,
-        "osago_both": 4,
-        "disagreement": 5,
-    }
-    return mapping.get(slot, 0)
-
-
-def _fallback_question(slot: str) -> str:
-    """
-    Возвращает вопрос на русском для каждого слота.
-    """
-    questions = {
-        "safety_confirmed": "Обеспечили ли вы безопасность места ДТП (нет пожара, нет угрозы взрыва)?",
-        "emergency_sign": "Включили ли вы аварийную сигнализацию и выставили ли знак аварийной остановки?",
-        "victims": "Есть ли пострадавшие в результате ДТП?",
-        "participants_count": "Сколько транспортных средств участвовало в ДТП?",
-        "osago_both": "Есть ли у всех водителей действующие полисы ОСАГО?",
-        "disagreement": "Согласны ли вы со вторым участником в обстоятельствах ДТП или есть разногласия?",
-    }
-    return questions.get(slot, "Уточните детали происшествия.")
-
-
-def _format_known_facts(slots: dict) -> str:
-    """
-    Форматирует известные факты для промпта.
-    Если все значения None -> строка "ничего не известно"
-    Иначе -> строка вида "key: value\\n" только для не-None значений
-    """
-    filled_items = [(k, v) for k, v in slots.items() if v is not None]
-    if not filled_items:
-        return "ничего не известно"
-    return "\n".join(f"{k}: {v}" for k, v in filled_items)
-
-
-class Step1Response:
-    """
-    Класс ответа Step1.
-    Принимает dict в __init__.
-    Свойства: step_completed (bool, default False),
-              answer (str|None), next_step (str|None)
-    Поддерживает доступ по ключу через __getitem__.
-    """
-
-    def __init__(self, data: dict):
-        self._data = data
-        self.step_completed = data.get("step_completed", False)
-        self.answer = data.get("answer")
-        self.next_step = data.get("next_step")
-
-    def __getitem__(self, key: str):
-        return self._data[key]
-
-
-class Step1Result(BaseModel):
-    """Result of Step 1 processing."""
-    finished: bool = False
-    next_step: str = "step1_collect_facts"
-    stop_factor: Optional[str] = None
-    instruction: str = ""
-    extracted_data: Dict[str, Any] = Field(default_factory=dict)
-    missing_slots: List[str] = Field(default_factory=list)
-    question: str = ""
-
-
-# --- Приватные функции для process_step1_with_llm ---
-
-def _extract_slots_llm(
-        giga: GigaChat,
-        message: str,
-        current_slots: dict,
-        history: list,
-        current_slot: str = "",  # <- новый параметр
-) -> dict:
-    recent = history[-3:] if len(history) >= 3 else history
-    recent_text = "\n".join(
-        f"П: {h['query']} / А: {h['answer']}" for h in recent
-    ) or "(начало диалога)"
-
-    # Человекочитаемое описание текущего слота для промпта
-    current_slot_label = _SLOT_DESCRIPTIONS.get(current_slot, "")
-    if current_slot_label:
-        current_slot_label = f"{current_slot} ({current_slot_label})"
-
-    prompt = _SLOT_EXTRACTION_PROMPT.format(
-        current_slots=_format_known_facts(current_slots),
-        current_slot_label=current_slot_label or "неизвестно",
-        recent_history=recent_text,
-        message=message,
-    )
-    payload = Chat(
-        messages=[
-            Messages(role=MessagesRole.SYSTEM,
-                     content="Ты — структурированный экстрактор данных. Отвечай только JSON."),
-            Messages(role=MessagesRole.USER, content=prompt),
-        ],
-        temperature=0.0,
-    )
-    try:
-        response = giga.chat(payload)
-        content = response.choices[0].message.content.strip()
-        if "```" in content:
-            parts = content.split("```")
-            for part in parts:
-                if part.strip().startswith("{"):
-                    content = part.strip()
-                    break
-        content = content.strip()
-        extracted = json.loads(content)
-        return {k: v for k, v in extracted.items() if v is not None}
-    except Exception as e:
-        print(f"[step1] slot extraction error: {e}")
-        return {}
-
-
 _FALLBACK_QUESTIONS: dict[str, list[str]] = {
     "safety_confirmed": [
         "Место ДТП безопасно? Нет угрозы пожара или взрыва?",
@@ -328,68 +149,299 @@ _FALLBACK_QUESTIONS: dict[str, list[str]] = {
     ],
 }
 
+_OVERRIDABLE_SLOTS = {"victims", "participants_count", "osago_both"}
+
+_SIMPLE_YES = frozenset({
+    "да", "yes", "ага", "конечно", "верно", "точно", "именно",
+    "угу", "ок", "ok", "хорошо", "само собой", "есть"
+})
+_SIMPLE_NO = frozenset({
+    "нет", "no", "не", "нету", "нети", "нетю", "неа", "нихт", "отсутствует"
+})
+_WORD_NUMS = {
+    "один": 1, "одна": 1, "одно": 1,
+    "два": 2, "две": 2,
+    "три": 3, "четыре": 4, "пять": 5,
+}
+
+
+# ---------------------------------------------------------------------------
+# Публичные вспомогательные функции (используются в тестах)
+# ---------------------------------------------------------------------------
+
+def validate_slots(slots: dict) -> tuple[bool, list[str]]:
+    """
+    Проверяет наличие всех обязательных ключей и их типы.
+
+    Возвращает:
+        (True, []) если валидно
+        (False, [список ошибок]) иначе
+    """
+    required_keys = [
+        "safety_confirmed",
+        "emergency_sign",
+        "victims",
+        "participants_count",
+        "osago_both",
+        "disagreement",
+    ]
+    errors = []
+
+    for key in required_keys:
+        if key not in slots:
+            errors.append(f"Missing required slot: {key}")
+
+    if errors:
+        return (False, errors)
+
+    bool_fields = ["safety_confirmed", "emergency_sign", "victims", "osago_both", "disagreement"]
+    for key in bool_fields:
+        value = slots[key]
+        if value is not None and not isinstance(value, bool):
+            errors.append(f"{key} must be bool or None, got {type(value).__name__}")
+
+    if slots["participants_count"] is not None and not isinstance(slots["participants_count"], int):
+        errors.append(
+            f"participants_count must be int or None, got {type(slots['participants_count']).__name__}"
+        )
+
+    return (not bool(errors), errors)
+
+
+def _init_slots(initial: dict) -> dict:
+    """Инициализирует слоты с None по умолчанию, подставляя известные значения."""
+    result: dict[str, Any] = {
+        "safety_confirmed": None,
+        "emergency_sign": None,
+        "victims": None,
+        "participants_count": None,
+        "osago_both": None,
+        "disagreement": None,
+    }
+    for key in SLOT_ORDER:
+        if key in initial:
+            result[key] = initial[key]
+    # Дополнительные флаги (disagreement_help_offered и т.д.)
+    for key, value in initial.items():
+        if key not in result:
+            result[key] = value
+    return result
+
+
+def _get_empty_slots(slots: dict) -> list[str]:
+    """
+    Возвращает список ключей со значением None.
+    Порядок соответствует SLOT_ORDER.
+    """
+    return [key for key in SLOT_ORDER if slots.get(key) is None]
+
+
+def _slot_to_block(slot: str) -> int:
+    """
+    Маппинг слота на номер блока алгоритма.
+    Неизвестный слот → 0.
+    """
+    mapping = {
+        "safety_confirmed": 0,
+        "emergency_sign": 1,
+        "victims": 2,
+        "participants_count": 3,
+        "osago_both": 4,
+        "disagreement": 5,
+    }
+    return mapping.get(slot, 0)
+
+
+def _fallback_question(slot: str) -> str:
+    """Возвращает вопрос на русском для каждого слота."""
+    questions = {
+        "safety_confirmed": "Обеспечили ли вы безопасность места ДТП (нет пожара, нет угрозы взрыва)?",
+        "emergency_sign": "Включили ли вы аварийную сигнализацию и выставили ли знак аварийной остановки?",
+        "victims": "Есть ли пострадавшие в результате ДТП?",
+        "participants_count": "Сколько транспортных средств участвовало в ДТП?",
+        "osago_both": "Есть ли у всех водителей действующие полисы ОСАГО?",
+        "disagreement": "Согласны ли вы со вторым участником в обстоятельствах ДТП или есть разногласия?",
+    }
+    return questions.get(slot, "Уточните детали происшествия.")
+
+
+def _format_known_facts(slots: dict) -> str:
+    """
+    Форматирует известные факты для промпта.
+    Если все значения None → строка "ничего не известно".
+    """
+    filled_items = [(k, v) for k, v in slots.items() if v is not None]
+    if not filled_items:
+        return "ничего не известно"
+    return "\n".join(f"{k}: {v}" for k, v in filled_items)
+
+
+class Step1Response:
+    """
+    Обёртка над dict для удобного доступа к полям ответа step1.
+    Используется в тестах для проверки структуры ответа.
+    """
+
+    def __init__(self, data: dict):
+        self._data = data
+        self.step_completed = data.get("step_completed", False)
+        self.answer = data.get("answer")
+        self.next_step = data.get("next_step")
+
+    @property
+    def slots(self) -> dict:
+        return self._data.get("slots", {})
+
+    def __getitem__(self, key: str) -> Any:
+        return self._data[key]
+
+
+# ---------------------------------------------------------------------------
+# Приватные функции
+# ---------------------------------------------------------------------------
+
+def _extract_slots_llm(
+    giga: GigaChat,
+    message: str,
+    current_slots: dict,
+    history: list,
+    current_slot: str = "",
+) -> dict:
+    """Вызывает LLM для извлечения слотов из сообщения пользователя."""
+    recent = history[-3:] if len(history) >= 3 else history
+    recent_text = "\n".join(
+        f"П: {h['query']} / А: {h['answer']}" for h in recent
+    ) or "(начало диалога)"
+
+    current_slot_label = _SLOT_DESCRIPTIONS.get(current_slot, "")
+    if current_slot_label:
+        current_slot_label = f"{current_slot} ({current_slot_label})"
+
+    prompt = _SLOT_EXTRACTION_PROMPT.format(
+        current_slots=_format_known_facts(current_slots),
+        current_slot_label=current_slot_label or "неизвестно",
+        recent_history=recent_text,
+        message=message,
+    )
+    payload = Chat(
+        messages=[
+            Messages(
+                role=MessagesRole.SYSTEM,
+                content="Ты — структурированный экстрактор данных. Отвечай только JSON.",
+            ),
+            Messages(role=MessagesRole.USER, content=prompt),
+        ],
+        temperature=0.0,
+    )
+    try:
+        response = giga.chat(payload)
+        content = response.choices[0].message.content.strip()
+        if "```" in content:
+            for part in content.split("```"):
+                if part.strip().startswith("{"):
+                    content = part.strip()
+                    break
+        extracted = json.loads(content)
+        return {k: v for k, v in extracted.items() if v is not None}
+    except Exception as e:
+        print(f"[step1] slot extraction error: {e}")
+        return {}
+
 
 def _ask_question(slot: str, history: list) -> str:
     """
-    Возвращает вопрос для слота. Без LLM, детерминировано.
-    Ротирует формулировки если вопрос уже задавался, чтобы не повторяться.
+    Возвращает вопрос для слота без вызова LLM.
+    Ротирует формулировки, если вопрос уже задавался.
     """
     variants = _FALLBACK_QUESTIONS.get(slot, ["Уточните детали."])
     if len(variants) == 1:
         return variants[0]
 
-    # Считаем сколько раз уже задавался вопрос по этому слоту
     asked_count = sum(
         1 for h in history
-        if any(v.lower()[:15] in h.get("answer", "").lower() or
-               v.lower()[:15] in h.get("query", "").lower()
-               for v in variants)
+        if any(
+            v.lower()[:15] in h.get("answer", "").lower()
+            or v.lower()[:15] in h.get("query", "").lower()
+            for v in variants
+        )
     )
-    idx = min(asked_count, len(variants) - 1)
-    return variants[idx]
+    return variants[min(asked_count, len(variants) - 1)]
 
 
 def _check_early_exit_step1(slots: dict) -> tuple[str, str] | None:
     """
-    Проверяет стоп-факторы. Возвращает (код, инструкция) или None.
-    Проверяет в порядке: victims -> participants_count -> osago_both.
+    Проверяет стоп-факторы в порядке: victims → participants_count → osago_both.
+    Возвращает (код, инструкция) или None.
     """
     if slots.get("victims") is True:
         return (
             "call_gibdd_victims",
-            "❌ Есть пострадавшие. Немедленно вызовите скорую (103) и ГИБДД (102). Европротокол оформлять нельзя."
+            "❌ Есть пострадавшие. Немедленно вызовите скорую (103) и ГИБДД (102). Европротокол оформлять нельзя.",
         )
     p_count = slots.get("participants_count")
     if p_count is not None:
         if p_count > 2:
             return (
                 "call_gibdd_participants",
-                "❌ Участников больше двух. Вызовите ГИБДД (102). Европротокол невозможен."
+                "❌ Участников больше двух. Вызовите ГИБДД (102). Европротокол невозможен.",
             )
         if p_count == 1:
             return (
                 "call_gibdd_participants",
-                "❌ ДТП с одним участником (например, наезд на препятствие). Вызовите ГИБДД (102)."
+                "❌ ДТП с одним участником (например, наезд на препятствие). Вызовите ГИБДД (102).",
             )
     if slots.get("osago_both") is False:
         return (
             "call_gibdd_osago",
-            "❌ У одного из водителей нет ОСАГО. Вызовите ГИБДД (102)."
+            "❌ У одного из водителей нет ОСАГО. Вызовите ГИБДД (102).",
         )
     return None
 
 
-# --- Главная функция для шагового режима ---
+def _try_simple_extraction(message: str, current_slot: str) -> dict:
+    """
+    Детерминированный маппинг для однозначных ответов.
+    Не требует LLM. Возвращает {} если ответ неоднозначный.
+    """
+    if not current_slot:
+        return {}
 
-_OVERRIDABLE_SLOTS = {"victims", "participants_count", "osago_both"}
+    text = message.strip().lower().rstrip("!.,?")
+    bool_slots = {"safety_confirmed", "emergency_sign", "victims", "osago_both", "disagreement"}
 
+    if current_slot in bool_slots:
+        if text in _SIMPLE_YES or text.startswith("есть "):
+            return {current_slot: True}
+        if text in _SIMPLE_NO or text.startswith("нет "):
+            return {current_slot: False}
+
+    if current_slot == "participants_count":
+        try:
+            n = int(text)
+            if 1 <= n <= 20:
+                return {current_slot: n}
+        except ValueError:
+            pass
+        if text in _WORD_NUMS:
+            return {current_slot: _WORD_NUMS[text]}
+
+    return {}
+
+
+# ---------------------------------------------------------------------------
+# Главная функция для шагового режима
+# ---------------------------------------------------------------------------
 
 def process_step1_with_llm(
-        giga: GigaChat,
-        query: str,
-        history: list,
-        current_slots: dict,
+    giga: GigaChat,
+    query: str,
+    history: list,
+    current_slots: dict,
 ) -> StepResponse:
+    """
+    Обрабатывает один шаг сбора фактов.
+    Возвращает StepResponse с обновлёнными слотами и следующим действием.
+    """
     merged = _init_slots(current_slots)
 
     next_slot_before = next(
@@ -414,6 +466,7 @@ def process_step1_with_llm(
         if merged.get(k) is None or k in _OVERRIDABLE_SLOTS:
             merged[k] = v
 
+    # Проверка стоп-факторов
     stop = _check_early_exit_step1(merged)
     if stop:
         _, instruction = stop
@@ -424,6 +477,7 @@ def process_step1_with_llm(
             slots=merged,
         )
 
+    # Активация подрежима помощи при разногласиях
     if merged.get("disagreement") is True and not merged.get("disagreement_help_offered"):
         merged["disagreement_help_offered"] = True
         merged["disagreement_help_active"] = True
@@ -438,6 +492,7 @@ def process_step1_with_llm(
             slots=merged,
         )
 
+    # Проверка завершения сбора слотов
     empty = _get_empty_slots(merged)
     if not empty:
         return StepResponse(
@@ -451,115 +506,9 @@ def process_step1_with_llm(
         )
 
     question = _ask_question(empty[0], history)
-
     return StepResponse(
         answer=question,
         step_completed=False,
         next_step=Step.STEP1,
         slots=merged,
     )
-
-
-STOP_FACTORS_MAP = {
-    "victims": "call_gibdd_victims",
-    "participants_count": "call_gibdd_participants",
-    "osago_both": "call_gibdd_osago",
-}
-
-
-def _make_giga() -> GigaChat:
-    """Create GigaChat client instance."""
-    return GigaChat(
-        credentials=GIGA_AUTH,
-        verify_ssl_certs=False,
-        scope="GIGACHAT_API_B2B",
-    )
-
-
-def _check_early_exit(data: Dict[str, Any]) -> Optional[Tuple[str, str]]:
-    """
-    Check for stop factors immediately after data extraction.
-    Returns (next_step_code, instruction_message) if stop factor found.
-    """
-    if data.get("victims") is True:
-        return "call_gibdd_victims", "❌ Есть пострадавшие. Немедленно вызовите скорую (103) и ГИБДД (102). Европротокол оформлять нельзя."
-
-    p_count = data.get("participants_count")
-    if p_count is not None:
-        if p_count > 2:
-            return "call_gibdd_participants", "❌ Участников больше двух. Вызовите ГИБДД (102). Европротокол невозможен."
-        if p_count == 1:
-            return "call_gibdd_participants", "❌ ДТП с одним участником (например, наезд на препятствие). Вызовите ГИБДД (102)."
-
-    if data.get("osago_both") is False:
-        return "call_gibdd_osago", "❌ У одного из водителей нет ОСАГО. Вызовите ГИБДД (102)."
-
-    return None
-
-
-def _get_next_question(filled_slots: List[str], context: Dict[str, Any]) -> str:
-    """Generate the next single question based on missing slots."""
-    for slot in SLOT_ORDER:
-        if slot not in filled_slots:
-            # Skip asking if we already have the data in context from previous turns
-            if slot in context and context[slot] is not None:
-                continue
-
-            questions = {
-                "safety_confirmed": "Обеспечили ли вы безопасность места ДТП (нет пожара, нет угрозы взрыва)?",
-                "emergency_sign": "Вы включили аварийную сигнализацию и выставили знак аварийной остановки?",
-                "victims": "Есть ли пострадавшие в результате ДТП (люди, требующие медицинской помощи)?",
-                "participants_count": "Сколько всего транспортных средств участвовало в ДТП?",
-                "osago_both": "Есть ли у всех водителей действующие полисы ОСАГО?",
-                "disagreement": "Согласны ли вы со вторым участником в обстоятельствах ДТП? Планируете ли использовать приложение 'Помощник ОСАГО'?",
-            }
-            return questions.get(slot, "Уточните детали происшествия.")
-
-    return ""
-
-
-_SIMPLE_YES = frozenset({
-    "да", "yes", "ага", "конечно", "верно", "точно", "именно",
-    "угу", "ок", "ok", "хорошо", "само собой", "есть"
-})
-_SIMPLE_NO = frozenset({
-    "нет", "no", "не", "нету", "нети", "нетю", "неа", "нихт", "отсутствует"
-})
-_WORD_NUMS = {
-    "один": 1, "одна": 1, "одно": 1,
-    "два": 2, "две": 2,
-    "три": 3, "четыре": 4, "пять": 5,
-}
-
-
-def _try_simple_extraction(message: str, current_slot: str) -> dict:
-    """
-    Детерминированный маппинг для однозначных ответов.
-    Не требует LLM. Возвращает {} если ответ не однозначный.
-    """
-    if not current_slot:
-        return {}
-
-    text = message.strip().lower().rstrip("!.,?")
-
-    bool_slots = {"safety_confirmed", "emergency_sign", "victims", "osago_both", "disagreement"}
-
-    if current_slot in bool_slots:
-        if text in _SIMPLE_YES or text.startswith("есть "):
-            return {current_slot: True}
-        if text in _SIMPLE_NO or text.startswith("нет "):
-            return {current_slot: False}
-
-    if current_slot == "participants_count":
-        # Числа цифрами
-        try:
-            n = int(text)
-            if 1 <= n <= 20:
-                return {current_slot: n}
-        except ValueError:
-            pass
-        # Числа словами
-        if text in _WORD_NUMS:
-            return {current_slot: _WORD_NUMS[text]}
-
-    return {}
