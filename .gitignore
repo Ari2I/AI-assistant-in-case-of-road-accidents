@@ -2,3 +2,6 @@
 __pycache__
 *.pyc
 history/test_user.json
+chroma_db/
+chroma_feedback/
+chroma_disagreement/

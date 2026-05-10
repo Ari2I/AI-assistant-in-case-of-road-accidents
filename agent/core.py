@@ -25,6 +25,9 @@ from rag.feedback_db import save_good_qa
 from templates.matcher import match_template
 from agent.step2_europrotocol import process_step2_with_llm
 from agent.step1_stateless import process_step1_with_llm
+from agent.disagreement_helper import run_disagreement_help   # новый
+from agent.step3_insurance import process_step3
+
 
 _CONFIDENCE_THRESHOLD = 0.65
 _MAX_IMPROVE_ATTEMPTS = 2
@@ -65,7 +68,9 @@ def run_agent(
     collected_fields: dict | None = None,
     db=None,
     feedback_db=None,
+    disagreement_db=None,
 ) -> dict:
+
     history = history or []
 
     # ШАГ 0: Шаблоны — всегда первыми
@@ -75,6 +80,17 @@ def run_agent(
 
     # ШАГ 1: Шаговый режим
     if current_step in (Step.STEP1, "step1"):
+        if slots and slots.get("disagreement_help_active"):
+            try:
+                with _make_giga() as giga:
+                    result = run_disagreement_help(
+                        giga, query, history, slots, disagreement_db
+                    )
+                return _step_response_to_dict(result, "step1")
+            except Exception as e:
+                print(f"[core] disagreement_help error: {e}")
+                return _step_error_response()
+
         # Короткие ответы — сразу в step1, без meta_classify
         # Длинные — сначала проверяем на общий вопрос
         is_general = False
@@ -167,6 +183,30 @@ def run_agent(
             print(f"[core] step2 error: {e}")
             return _step_error_response()
 
+    if current_step in (Step.OFFER_EUROPROTOCOL, "offer_europrotocol"):
+        return _run_offer_europrotocol(query, history, slots or {})
+
+    if current_step in (Step.STEP3, "step3"):
+        try:
+            with _make_giga() as giga:
+                result = process_step3(
+                    giga, query, history,
+                    collected_fields, db, feedback_db
+                )
+            return _step_response_to_dict(result, "step3")
+        except Exception as e:
+            print(f"[core] step3 error: {e}")
+            return _step_error_response()
+
+    if current_step in (Step.CONSULTANT_ONLY, "consultant_only"):
+        return _run_general_consultant(query, history, db, feedback_db)
+
+        # Fallback — фикс бага из ревью (нет return при current_step=None)
+    return _ok(
+        "Я консультирую по вопросам оформления ДТП. Опишите вашу ситуацию.",
+        "filter",
+        None,
+    )
 
 def rate_answer(
     query: str,
@@ -294,8 +334,8 @@ def _step_response_to_dict(result: StepResponse, source: str) -> dict:
         "category": None,
         "step_completed": result.step_completed,
         "next_step": result.next_step,
-        "slots": result.slots,
-        "collected_fields": result.collected_fields,
+        "slots": result.slots or {},
+        "collected_fields": result.collected_fields or {},
         "final_json": result.final_json,
     }
 
@@ -314,3 +354,87 @@ def _step_error_response() -> dict:
         "collected_fields": {},
         "final_json": None,
     }
+
+def _run_offer_europrotocol(query: str, history: list, slots: dict) -> dict:
+    q = query.strip().lower()
+    AGREE    = {"да", "хочу", "давайте", "готов", "заполним", "ок", "ok", "yes"}
+    REFUSE   = {"нет", "не хочу", "не буду", "откажусь", "гибдд", "no"}
+
+    if any(kw in q for kw in AGREE):
+        return {
+            "answer": "Отлично, начинаем заполнение Европротокола.",
+            "source": "offer",
+            "category": None,
+            "step_completed": True,
+            "next_step": Step.STEP2,
+            "slots": slots,
+            "collected_fields": {},
+            "final_json": None,
+        }
+
+    if any(kw in q for kw in REFUSE):
+        return {
+            "answer": (
+                "Понял. Для оформления ДТП вам необходимо вызвать ГИБДД (102). "
+                "Я продолжу отвечать на ваши вопросы в режиме консультанта."
+            ),
+            "source": "offer",
+            "category": None,
+            "step_completed": True,
+            "next_step": Step.CONSULTANT_ONLY,
+            "slots": slots,
+            "collected_fields": None,
+            "final_json": None,
+        }
+
+    # Неоднозначный ответ
+    return {
+        "answer": (
+            "Скажите, пожалуйста: хотите заполнить Европротокол сейчас, "
+            "или предпочтёте вызвать ГИБДД?"
+        ),
+        "source": "offer",
+        "category": None,
+        "step_completed": False,
+        "next_step": Step.OFFER_EUROPROTOCOL,
+        "slots": slots,
+        "collected_fields": None,
+        "final_json": None,
+    }
+
+
+def _run_general_consultant(
+    query: str,
+    history: list,
+    db,
+    feedback_db,
+) -> dict:
+    """
+    Режим консультанта без шагового сценария.
+    Пользователь отказался от заполнения протокола.
+    """
+    try:
+        with _make_giga() as giga:
+            classifier_history = build_history(history, component="classifier")
+            meta = meta_classify(giga, query, classifier_history)
+            category = meta.get("category", "first_steps")
+            block = meta.get("block", 0)
+
+            context = get_context_for_category(db, feedback_db, query, category)
+            algorithm_slice = get_algorithm_slice(block) if block >= 0 else ""
+            generator_history = build_history(
+                history, component="generator", category=category
+            )
+            plan = {"category": category, "block": block}
+            answer, _ = _generate_with_selfcheck(
+                giga, query, context, plan, algorithm_slice, generator_history
+            )
+
+        return _ok(answer, "llm", category)
+    except Exception as e:
+        print(f"[core] consultant_only error: {e}")
+        return _ok(
+            "Произошла ошибка. Если нужна срочная помощь — звоните 112.",
+            "error",
+            None,
+        )

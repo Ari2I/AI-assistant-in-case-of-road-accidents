@@ -82,14 +82,22 @@ def run_step_flow() -> None:
         if response.get("step_completed"):
             next_s = response.get("next_step", "")
 
-            if next_s == Step.STEP2:
+            if next_s == Step.OFFER_EUROPROTOCOL:
+                current_step = Step.OFFER_EUROPROTOCOL
+                print("[Переход → Предложение заполнить Европротокол]\n")
+
+            elif next_s == Step.STEP2:
                 current_step = Step.STEP2
                 collected_fields = _map_slots_to_fields(slots)
-                print(f"[Переход → Шаг 2: заполнение Европротокола]\n")
+                print("[Переход → Шаг 2: заполнение Европротокола]\n")
 
-            elif next_s == Step.CALL_GIBDD:
-                print("[⚠️ Вызовите ГИБДД. Сессия завершена.]\n")
-                break
+
+            elif next_s == Step.CONSULTANT_ONLY:
+                current_step = Step.CONSULTANT_ONLY
+                print("[Переход → Режим консультанта]\n")
+                # Сбрасываем slots — шаговый сценарий завершён
+                slots = {}
+                collected_fields = {}
 
             elif next_s == Step.DONE:
                 print("\n[✅ Протокол готов!]")
@@ -99,6 +107,11 @@ def run_step_flow() -> None:
                         response["final_json"],
                         ensure_ascii=False, indent=2
                     ))
+                print("[Переход → Шаг 3: помощь со страховой]\n")
+                current_step = Step.STEP3
+
+            elif next_s == Step.CALL_GIBDD:
+                print("[⚠️ Вызовите ГИБДД. Сессия завершена.]\n")
                 break
 
         # --- Оценка ---

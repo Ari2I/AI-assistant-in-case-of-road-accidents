@@ -10,12 +10,14 @@ from typing import Any
 
 
 class Step(str, Enum):
-    """Допустимые значения текущего шага."""
-    GENERAL   = "general"    # Общие вопросы по ДТП/ОСАГО
-    STEP1     = "step1"      # Сбор фактов
-    STEP2     = "step2"      # Заполнение Европротокола
-    DONE      = "done"       # Оформление завершено
-    CALL_GIBDD = "call_gibdd" # Стоп-фактор, нужна ГИБДД
+    GENERAL             = "general"
+    STEP1               = "step1"
+    STEP2               = "step2"
+    STEP3               = "step3"
+    OFFER_EUROPROTOCOL  = "offer_europrotocol"
+    CONSULTANT_ONLY     = "consultant_only"
+    DONE                = "done"
+    CALL_GIBDD          = "call_gibdd"
 
 
 @dataclass

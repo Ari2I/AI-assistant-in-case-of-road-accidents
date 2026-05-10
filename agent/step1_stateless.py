@@ -92,16 +92,15 @@ _SLOT_EXTRACTION_PROMPT = """\
 }}
 """
 
-
-
 _SLOT_DESCRIPTIONS = {
     "safety_confirmed": "безопасность места ДТП (нет пожара, угрозы взрыва)",
-    "emergency_sign":   "включена аварийная сигнализация и выставлен знак",
-    "victims":          "есть ли пострадавшие, требующие медицинской помощи",
+    "emergency_sign": "включена аварийная сигнализация и выставлен знак",
+    "victims": "есть ли пострадавшие, требующие медицинской помощи",
     "participants_count": "количество транспортных средств — участников ДТП",
-    "osago_both":       "наличие действующих полисов ОСАГО у всех участников",
-    "disagreement":     "наличие разногласий об обстоятельствах ДТП",
+    "osago_both": "наличие действующих полисов ОСАГО у всех участников",
+    "disagreement": "наличие разногласий об обстоятельствах ДТП",
 }
+
 
 def validate_slots(slots: dict) -> tuple[bool, list[str]]:
     """
@@ -149,11 +148,6 @@ def validate_slots(slots: dict) -> tuple[bool, list[str]]:
 
 
 def _init_slots(initial: dict) -> dict:
-    """
-    Возвращает словарь со всеми 6 ключами.
-    Значения из initial сохраняются, остальные = None.
-    Неизвестные ключи из initial игнорируются.
-    """
     result = {
         "safety_confirmed": None,
         "emergency_sign": None,
@@ -162,9 +156,14 @@ def _init_slots(initial: dict) -> dict:
         "osago_both": None,
         "disagreement": None,
     }
+    # Основные слоты
     for key in SLOT_ORDER:
         if key in initial:
             result[key] = initial[key]
+    # Дополнительные флаги (disagreement_help_offered и т.д.)
+    for key, value in initial.items():
+        if key not in result:
+            result[key] = value
     return result
 
 
@@ -229,6 +228,7 @@ class Step1Response:
               answer (str|None), next_step (str|None)
     Поддерживает доступ по ключу через __getitem__.
     """
+
     def __init__(self, data: dict):
         self._data = data
         self.step_completed = data.get("step_completed", False)
@@ -253,11 +253,11 @@ class Step1Result(BaseModel):
 # --- Приватные функции для process_step1_with_llm ---
 
 def _extract_slots_llm(
-    giga: GigaChat,
-    message: str,
-    current_slots: dict,
-    history: list,
-    current_slot: str = "",          # <- новый параметр
+        giga: GigaChat,
+        message: str,
+        current_slots: dict,
+        history: list,
+        current_slot: str = "",  # <- новый параметр
 ) -> dict:
     recent = history[-3:] if len(history) >= 3 else history
     recent_text = "\n".join(
@@ -277,7 +277,8 @@ def _extract_slots_llm(
     )
     payload = Chat(
         messages=[
-            Messages(role=MessagesRole.SYSTEM, content="Ты — структурированный экстрактор данных. Отвечай только JSON."),
+            Messages(role=MessagesRole.SYSTEM,
+                     content="Ты — структурированный экстрактор данных. Отвечай только JSON."),
             Messages(role=MessagesRole.USER, content=prompt),
         ],
         temperature=0.0,
@@ -297,9 +298,6 @@ def _extract_slots_llm(
     except Exception as e:
         print(f"[step1] slot extraction error: {e}")
         return {}
-
-
-
 
 
 _FALLBACK_QUESTIONS: dict[str, list[str]] = {
@@ -385,11 +383,12 @@ def _check_early_exit_step1(slots: dict) -> tuple[str, str] | None:
 
 _OVERRIDABLE_SLOTS = {"victims", "participants_count", "osago_both"}
 
+
 def process_step1_with_llm(
-    giga: GigaChat,
-    query: str,
-    history: list,
-    current_slots: dict,
+        giga: GigaChat,
+        query: str,
+        history: list,
+        current_slots: dict,
 ) -> StepResponse:
     merged = _init_slots(current_slots)
 
@@ -425,12 +424,29 @@ def process_step1_with_llm(
             slots=merged,
         )
 
+    if merged.get("disagreement") is True and not merged.get("disagreement_help_offered"):
+        merged["disagreement_help_offered"] = True
+        merged["disagreement_help_active"] = True
+        return StepResponse(
+            answer=(
+                "Вы упомянули, что есть разногласия со вторым участником. "
+                "Это важно — от этого зависит лимит выплаты. "
+                "Хотите, я объясню, как правильно их зафиксировать?"
+            ),
+            step_completed=False,
+            next_step=Step.STEP1,
+            slots=merged,
+        )
+
     empty = _get_empty_slots(merged)
     if not empty:
         return StepResponse(
-            answer="Отлично! Все данные собраны. Переходим к оформлению Европротокола.",
+            answer=(
+                "Все данные собраны. Вы можете оформить Европротокол — "
+                "я помогу заполнить каждое поле. Хотите приступить?"
+            ),
             step_completed=True,
-            next_step=Step.STEP2,
+            next_step=Step.OFFER_EUROPROTOCOL,
             slots=merged,
         )
 
@@ -443,52 +459,12 @@ def process_step1_with_llm(
         slots=merged,
     )
 
+
 STOP_FACTORS_MAP = {
     "victims": "call_gibdd_victims",
     "participants_count": "call_gibdd_participants",
     "osago_both": "call_gibdd_osago",
 }
-
-STEP1_EXTRACTION_PROMPT = """\
-Ты — ассистент по сбору фактов о ДТП для определения возможности оформления Европротокола.
-
-Твоя задача: извлечь из сообщения пользователя следующие данные (если они упоминаются):
-
-1. safety_confirmed (bool) — обеспечена ли безопасность места ДТП (нет пожара, нет угрозы взрыва)
-2. emergency_sign (bool) — включил ли водитель аварийную сигнализацию и выставил ли знак аварийной остановки
-3. victims (bool) — есть ли пострадавшие (люди, требующие медицинской помощи)
-4. participants_count (int) — количество транспортных средств, участвовавших в ДТП
-5. osago_both (bool) — есть ли у всех водителей действующие полисы ОСАГО
-6. disagreement (bool) — есть ли разногласия между участниками ДТП
-
-ПРАВИЛА:
-- Извлекай ТОЛЬКО явные факты из сообщения. Не додумывай.
-- Если факт не упомянут — не включай его в результат.
-- Возвращай ответ ТОЛЬКО в формате JSON без лишних комментариев.
-- Используй null для полей, которые не удалось извлечь.
-- Учитывай контекст диалога: краткие ответы ("да", "нет", числа) относятся к последнему заданному вопросу.
-
-ВАЖНО: Пользователь может отвечать кратко:
-- "да", "yes", "ага", "конечно" → true
-- "нет", "no", "не", "никогда" → false
-- Числа (например "2", "три", "один") → соответствующее целое число для participants_count
-
-Пример ответа:
-{{
-    "victims": false,
-    "participants_count": 2,
-    "osago_both": true
-}}
-
-Известные данные на текущий момент:
-{known_data}
-
-История диалога (последние 3 реплики):
-{recent_history}
-
-Сообщение пользователя:
-{user_message}
-"""
 
 
 def _make_giga() -> GigaChat:
@@ -499,54 +475,6 @@ def _make_giga() -> GigaChat:
         scope="GIGACHAT_API_B2B",
     )
 
-
-def _extract_data_with_llm(giga: GigaChat, user_message: str, conversation_context: Dict[str, Any]) -> Dict[str, Any]:
-    """Use LLM to extract structured data from user message with context."""
-    current_data = conversation_context.get("step1_data", {})
-    history = conversation_context.get("history", [])
-
-    # Format known data
-    known_data_str = "ничего не известно" if not current_data else "\n".join(f"{k}: {v}" for k, v in current_data.items() if v is not None)
-
-    # Format recent history (last 3 exchanges)
-    recent_history = history[-3:] if len(history) >= 3 else history
-    recent_history_str = "\n".join(
-        f"Пользователь: {h['query']}\nАссистент: {h['answer']}"
-        for h in recent_history
-    ) or "(начало диалога)"
-
-    prompt = STEP1_EXTRACTION_PROMPT.format(
-        known_data=known_data_str,
-        recent_history=recent_history_str,
-        user_message=user_message
-    )
-
-    payload = Chat(
-        messages=[
-            Messages(role=MessagesRole.SYSTEM, content="Ты — структурированный экстрактор данных. Отвечай только JSON."),
-            Messages(role=MessagesRole.USER, content=prompt),
-        ],
-        temperature=0.0,
-    )
-
-    try:
-        response = giga.chat(payload)
-        content = response.choices[0].message.content.strip()
-
-        # Parse JSON response
-        import json
-        # Remove markdown code blocks if present
-        if content.startswith("```"):
-            content = content.split("```")[1]
-            if content.startswith("json"):
-                content = content[4:]
-        content = content.strip()
-
-        extracted = json.loads(content)
-        return {k: v for k, v in extracted.items() if v is not None}
-    except Exception as e:
-        print(f"[step1] LLM extraction error: {e}")
-        return {}
 
 def _check_early_exit(data: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     """
@@ -590,70 +518,6 @@ def _get_next_question(filled_slots: List[str], context: Dict[str, Any]) -> str:
     return ""
 
 
-def process_step1_query(
-    user_message: str,
-    conversation_context: Dict[str, Any]
-) -> Step1Result:
-    """
-    Process user message for Step 1.
-    Extracts facts flexibly (multiple slots at once) using LLM.
-    Checks for early exit conditions.
-    """
-    # 1. Initialize state from context
-    current_data = conversation_context.get("step1_data", {})
-    filled_slots = conversation_context.get("step1_filled_slots", [])
-
-    # 2. Use LLM to extract entities from user message
-    with _make_giga() as giga:
-        new_extracted = _extract_data_with_llm(giga, user_message, conversation_context)
-
-    # Merge newly extracted data with existing data
-    for key, value in new_extracted.items():
-        if key not in current_data or current_data[key] is None:
-            current_data[key] = value
-            if key not in filled_slots:
-                filled_slots.append(key)
-
-    # 3. Check Early Exit (Stop Factors)
-    stop_result = _check_early_exit(current_data)
-    if stop_result:
-        next_step_code, instruction = stop_result
-        return Step1Result(
-            finished=True,
-            next_step=next_step_code,
-            stop_factor=next_step_code,
-            instruction=instruction,
-            extracted_data=current_data
-        )
-
-    # 4. Check Completion
-    all_slots_filled = all(slot in filled_slots for slot in SLOT_ORDER)
-
-    if all_slots_filled:
-        # Success: Move to Step 2
-        return Step1Result(
-            finished=True,
-            next_step="step2_fill_europrotocol",
-            instruction="✅ Отлично, все данные собраны. Переходим к заполнению Европротокола.",
-            extracted_data=current_data,
-            missing_slots=[]
-        )
-
-    # 5. Generate Next Question
-    next_q = _get_next_question(filled_slots, current_data)
-
-    # Identify missing slots for the response
-    missing = [s for s in SLOT_ORDER if s not in filled_slots]
-
-    return Step1Result(
-        finished=False,
-        next_step="step1_collect_facts",
-        instruction=f"Понял. {next_q}" if next_q else "Расскажите подробнее.",
-        extracted_data=current_data,
-        missing_slots=missing,
-        question=next_q
-    )
-
 _SIMPLE_YES = frozenset({
     "да", "yes", "ага", "конечно", "верно", "точно", "именно",
     "угу", "ок", "ok", "хорошо", "само собой", "есть"
@@ -681,9 +545,9 @@ def _try_simple_extraction(message: str, current_slot: str) -> dict:
     bool_slots = {"safety_confirmed", "emergency_sign", "victims", "osago_both", "disagreement"}
 
     if current_slot in bool_slots:
-        if text in _SIMPLE_YES:
+        if text in _SIMPLE_YES or text.startswith("есть "):
             return {current_slot: True}
-        if text in _SIMPLE_NO:
+        if text in _SIMPLE_NO or text.startswith("нет "):
             return {current_slot: False}
 
     if current_slot == "participants_count":
