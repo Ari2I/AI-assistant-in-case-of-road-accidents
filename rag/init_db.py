@@ -1,28 +1,19 @@
-from langchain_gigachat import GigaChatEmbeddings
-from langchain_chroma import Chroma
+"""
+Обёртка для обратной совместимости с Django-бэкендом.
+Django вызывает load_db() / load_feedback_db() при старте
+и передаёт результат в run_agent() как параметры.
 
-from config import GIGA_AUTH
+Новый код агента использует rag.db_manager напрямую.
+"""
 
-
-def get_embeddings():
-    return GigaChatEmbeddings(
-        credentials=GIGA_AUTH,
-        verify_ssl_certs=False,
-        scope="GIGACHAT_API_B2B",
-    )
+from rag.db_manager import get_main_db, get_feedback_db
 
 
 def load_db():
-    """Основная база с документами по ДТП"""
-    return Chroma(
-        persist_directory="chroma_db",
-        embedding_function=get_embeddings(),
-    )
+    """Возвращает основную Chroma-базу документов."""
+    return get_main_db()
 
 
 def load_feedback_db():
-    """База с хорошими Q&A из фидбека"""
-    return Chroma(
-        persist_directory="chroma_feedback",
-        embedding_function=get_embeddings(),
-    )
+    """Возвращает базу хороших Q&A."""
+    return get_feedback_db()

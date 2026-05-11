@@ -1,20 +1,10 @@
-from langchain_gigachat import GigaChatEmbeddings
-from langchain_chroma import Chroma
+"""
+Обёртка для обратной совместимости с Django-бэкендом.
+"""
 
-from config import GIGA_AUTH
+from rag.db_manager import get_disagreement_db
 
 
 def load_disagreement_db():
-    """База знаний по разногласиям при ДТП."""
-    return Chroma(
-        persist_directory="chroma_disagreement",
-        embedding_function=_get_embeddings(),
-    )
-
-
-def _get_embeddings():
-    return GigaChatEmbeddings(
-        credentials=GIGA_AUTH,
-        verify_ssl_certs=False,
-        scope="GIGACHAT_API_B2B",
-    )
+    """Возвращает базу знаний по разногласиям."""
+    return get_disagreement_db()

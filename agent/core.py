@@ -1,13 +1,13 @@
 """
-Pipeline v4.0 — оптимизированный по токенам.
+Pipeline v4.1 — рефакторинг core.py.
 
-Изменения vs v3.0:
-  - filter + classifier + planner → один вызов (meta_classifier)
-  - генератор получает только нужный блок алгоритма, не весь (~400 вместо ~3000 токенов)
-  - self_check запускается только если ответ содержит маркеры неуверенности
-
-Было: до 5 LLM-вызовов, ~10 000 токенов
-Стало: 2-3 LLM-вызова, ~4 000-5 000 токенов
+Изменения vs v4.0:
+  - db_manager используется как fallback, если Django не передал базы
+  - Исправлен баг: current_step=None теперь вызывает _run_general_consultant
+    вместо возврата бесполезного статичного сообщения
+  - Удалены бесполезные обёртки _run_step1 / _run_step2
+  - Упрощены сравнения current_step (str, Enum — достаточно одного значения)
+  - Логика маршрутизации вынесена в _route_by_step для читаемости
 """
 
 from gigachat import GigaChat
@@ -22,6 +22,7 @@ from agent.history import build_history
 from evaluation.self_check import improve_answer
 from evaluation.critic import critic_rate_answer
 from rag.feedback_db import save_good_qa
+from rag.db_manager import get_main_db, get_feedback_db, get_disagreement_db
 from templates.matcher import match_template
 from agent.step2_europrotocol import process_step2_with_llm
 from agent.step1_stateless import process_step1_with_llm
@@ -32,31 +33,18 @@ from agent.step3_insurance import process_step3
 _CONFIDENCE_THRESHOLD = 0.65
 _MAX_IMPROVE_ATTEMPTS = 2
 
-# Маркеры неуверенности в ответе — если есть, запускаем self_check
-# Иначе пропускаем (~2500 токенов экономии на уверенных ответах)
 _UNCERTAINTY_MARKERS = [
     "не уверен", "возможно", "наверное", "кажется", "точно не знаю",
     "затрудняюсь", "не могу сказать", "уточните", "не помню",
 ]
 
-# Алгоритм загружается один раз при старте — не читаем файл на каждый запрос
+# Алгоритм загружается один раз при старте модуля
 _ALGORITHM = load_algorithm()
 
 
-def _looks_like_step_answer(query: str) -> bool:
-    """
-    Короткий ответ в контексте шага — почти наверняка ответ на вопрос,
-    а не самостоятельный общий вопрос. Пропускаем meta_classify.
-    """
-    q = query.strip().lower().rstrip("!.,")
-    words = q.split()
-    if len(words) <= 3:
-        return True
-    starts = ("да ", "нет ", "ага ", "нету ", "есть ", "нет,", "да,")
-    if any(q.startswith(s) for s in starts):
-        return True
-    return False
-
+# ---------------------------------------------------------------------------
+# Публичный API
+# ---------------------------------------------------------------------------
 
 def run_agent(
     query: str,
@@ -68,78 +56,34 @@ def run_agent(
     feedback_db=None,
     disagreement_db=None,
 ) -> dict:
+    """
+    Основная точка входа агента.
 
+    Django передаёт инициализированные базы через параметры db/feedback_db/disagreement_db.
+    При локальном запуске (None) используется db_manager как fallback.
+    """
     history = history or []
 
-    # ШАГ 0: Шаблоны — всегда первыми
+    # Fallback к db_manager, если Django не передал базы
+    db = db or get_main_db()
+    feedback_db = feedback_db or get_feedback_db()
+    disagreement_db = disagreement_db or get_disagreement_db()
+
+    # ШАГ 0: шаблоны — проверяем первыми, без вызова LLM
     template_answer = match_template(query)
     if template_answer:
         return _ok(template_answer, "template", None)
 
-    # ШАГ 1: Шаговый режим
-    if current_step in (Step.STEP1, "step1"):
-        if slots and slots.get("disagreement_help_active"):
-            try:
-                with _make_giga() as giga:
-                    result = run_disagreement_help(
-                        giga, query, history, slots, disagreement_db
-                    )
-                return _step_response_to_dict(result, "step1")
-            except Exception as e:
-                print(f"[core] disagreement_help error: {e}")
-                return _step_error_response()
-
-        general_result = _try_handle_as_general_question(query, history, db, feedback_db)
-        if general_result:
-            return general_result
-
-        try:
-            with _make_giga() as giga:
-                result = _run_step1(giga, query, history, slots or {})
-            return _step_response_to_dict(result, "step1")
-        except Exception as e:
-            print(f"[core] step1 error: {e}")
-            return _step_error_response()
-
-    if current_step in (Step.STEP2, "step2"):
-        general_result = _try_handle_as_general_question(query, history, db, feedback_db)
-        if general_result:
-            return general_result
-
-        try:
-            with _make_giga() as giga:
-                result = _run_step2(
-                    giga, query, history,
-                    slots or {}, collected_fields or {}
-                )
-            return _step_response_to_dict(result, "step2")
-        except Exception as e:
-            print(f"[core] step2 error: {e}")
-            return _step_error_response()
-
-    if current_step in (Step.OFFER_EUROPROTOCOL, "offer_europrotocol"):
-        return _run_offer_europrotocol(query, history, slots or {})
-
-    if current_step in (Step.STEP3, "step3"):
-        try:
-            with _make_giga() as giga:
-                result = process_step3(
-                    giga, query, history,
-                    collected_fields, db, feedback_db
-                )
-            return _step_response_to_dict(result, "step3")
-        except Exception as e:
-            print(f"[core] step3 error: {e}")
-            return _step_error_response()
-
-    if current_step in (Step.CONSULTANT_ONLY, "consultant_only"):
-        return _run_general_consultant(query, history, db, feedback_db)
-
-    # Fallback — нет current_step или неизвестный шаг
-    return _ok(
-        "Я консультирую по вопросам оформления ДТП. Опишите вашу ситуацию.",
-        "filter",
-        None,
+    # ШАГ 1: маршрутизация по текущему шагу сценария
+    return _route_by_step(
+        query=query,
+        current_step=current_step,
+        history=history,
+        slots=slots or {},
+        collected_fields=collected_fields or {},
+        db=db,
+        feedback_db=feedback_db,
+        disagreement_db=disagreement_db,
     )
 
 
@@ -150,16 +94,13 @@ def rate_answer(
     feedback_db=None,
 ) -> dict:
     """
-    Запускает AI-критика и при высоких оценках дообучает RAG.
+    Запускает AI-критика. При высоких оценках сохраняет Q&A в базу дообучения.
 
     Args:
         query:       вопрос пользователя (из БД бэкенда)
         answer:      ответ агента (из БД бэкенда)
         rating:      оценка пользователя 0–5
-        feedback_db: база дообучения
-
-    Returns:
-        {"critic_score": int, "critic_comment": str}
+        feedback_db: база дообучения (опционально, используется менеджер как fallback)
     """
     try:
         with _make_giga() as giga:
@@ -176,159 +117,84 @@ def rate_answer(
 
 
 # ---------------------------------------------------------------------------
-# Вспомогательные функции
+# Маршрутизация
 # ---------------------------------------------------------------------------
 
-def _make_giga() -> GigaChat:
-    return GigaChat(
-        credentials=GIGA_AUTH,
-        verify_ssl_certs=False,
-        scope="GIGACHAT_API_B2B",
-    )
-
-
-def _should_run_selfcheck(answer: str) -> bool:
-    """Запускаем self_check только при явных маркерах неуверенности."""
-    answer_lower = answer.lower()
-    return any(marker in answer_lower for marker in _UNCERTAINTY_MARKERS)
-
-
-def _generate_with_selfcheck(
-    giga: GigaChat,
+def _route_by_step(
     query: str,
-    context: str,
-    plan: dict,
-    algorithm_slice: str,
-    generator_history: str,
-) -> tuple[str, float]:
-    raw = generate_answer(
-        giga, query, context, plan,
-        algorithm=algorithm_slice,
-        history_text=generator_history,
-    )
-
-    if not _should_run_selfcheck(raw):
-        return raw, 1.0
-
-    for attempt in range(_MAX_IMPROVE_ATTEMPTS):
-        verdict, conf, issues, improved = improve_answer(giga, query, raw, context)
-
-        if verdict == "GOOD":
-            return raw, conf
-
-        raw = improved
-        if issues:
-            print(f"[core] self-check attempt {attempt + 1}: {issues[:80]}")
-
-        if conf >= _CONFIDENCE_THRESHOLD:
-            break
-
-    return raw, 0.0
-
-
-def _try_handle_as_general_question(
-    query: str,
-    history: list,
-    db,
-    feedback_db,
-) -> dict | None:
-    """
-    Проверяет, является ли запрос общим вопросом (не ответом на текущий шаг).
-    Если да — генерирует ответ и возвращает его.
-    Если нет или произошла ошибка — возвращает None.
-    """
-    if _looks_like_step_answer(query):
-        return None
-
-    try:
-        with _make_giga() as giga:
-            classifier_history = build_history(history, component="classifier")
-            meta = meta_classify(giga, query, classifier_history)
-
-            if meta["category"] != "general_questions":
-                return None
-
-            context = get_context_for_category(db, feedback_db, query, "general_questions")
-            plan = {
-                "category": "general_questions",
-                "stage": "general_questions",
-                "answer_type": "info",
-                "algorithm_block": -1,
-            }
-            generator_history = build_history(
-                history, component="generator", category="general_questions"
-            )
-            answer, _ = _generate_with_selfcheck(
-                giga, query, context, plan,
-                algorithm_slice="",
-                generator_history=generator_history,
-            )
-            return _ok(answer, "llm", "general_questions")
-
-    except Exception as e:
-        print(f"[core] general question check error: {e}")
-        return None
-
-
-def _ok(answer: str, source: str, category: str | None) -> dict:
-    return {
-        "answer": answer,
-        "source": source,
-        "category": category,
-        "step_completed": False,
-        "next_step": None,
-        "slots": None,
-        "collected_fields": None,
-        "final_json": None,
-    }
-
-
-def _run_step1(giga: GigaChat, query: str, history: list, slots: dict) -> StepResponse:
-    """Делегирует в step1_stateless.process_step1_with_llm()."""
-    return process_step1_with_llm(giga, query, history, slots)
-
-
-def _run_step2(
-    giga: GigaChat,
-    query: str,
+    current_step: str | None,
     history: list,
     slots: dict,
     collected_fields: dict,
-) -> StepResponse:
-    """Делегирует в step2_europrotocol.process_step2_with_llm()."""
-    return process_step2_with_llm(giga, query, history, slots, collected_fields)
+    db,
+    feedback_db,
+    disagreement_db,
+) -> dict:
+    """Направляет запрос к нужному обработчику в зависимости от current_step."""
+
+    # --- STEP 1: сбор фактов ---
+    if current_step == Step.STEP1:
+        if slots.get("disagreement_help_active"):
+            return _handle_with_error_guard(
+                lambda giga: _step_response_to_dict(
+                    run_disagreement_help(giga, query, history, slots, disagreement_db),
+                    "step1",
+                ),
+                "disagreement_help",
+            )
+
+        general = _try_handle_as_general_question(query, history, db, feedback_db)
+        if general:
+            return general
+
+        return _handle_with_error_guard(
+            lambda giga: _step_response_to_dict(
+                process_step1_with_llm(giga, query, history, slots),
+                "step1",
+            ),
+            "step1",
+        )
+
+    # --- STEP 2: заполнение Европротокола ---
+    if current_step == Step.STEP2:
+        general = _try_handle_as_general_question(query, history, db, feedback_db)
+        if general:
+            return general
+
+        return _handle_with_error_guard(
+            lambda giga: _step_response_to_dict(
+                process_step2_with_llm(giga, query, history, slots, collected_fields),
+                "step2",
+            ),
+            "step2",
+        )
+
+    # --- Предложение заполнить Европротокол ---
+    if current_step == Step.OFFER_EUROPROTOCOL:
+        return _run_offer_europrotocol(query, history, slots)
+
+    # --- STEP 3: помощь со страховой ---
+    if current_step == Step.STEP3:
+        return _handle_with_error_guard(
+            lambda giga: _step_response_to_dict(
+                process_step3(giga, query, history, collected_fields, db, feedback_db),
+                "step3",
+            ),
+            "step3",
+        )
+
+    # --- Режим консультанта (пользователь отказался от Европротокола) ---
+    if current_step == Step.CONSULTANT_ONLY:
+        return _run_general_consultant(query, history, db, feedback_db)
+
+    # --- current_step is None или неизвестное значение ---
+    # Общий консультант: отвечаем на вопросы без шагового сценария
+    return _run_general_consultant(query, history, db, feedback_db)
 
 
-def _step_response_to_dict(result: StepResponse, source: str) -> dict:
-    """Преобразует StepResponse в dict для возврата бэкенду."""
-    return {
-        "answer": result.answer,
-        "source": source,
-        "category": None,
-        "step_completed": result.step_completed,
-        "next_step": result.next_step,
-        "slots": result.slots or {},
-        "collected_fields": result.collected_fields or {},
-        "final_json": result.final_json,
-    }
-
-
-def _step_error_response() -> dict:
-    """Возвращает безопасный ответ при ошибке шагового режима."""
-    return {
-        "answer": (
-            "Произошла техническая ошибка. "
-            "Если вы в опасной ситуации — немедленно звоните 112."
-        ),
-        "source": "error",
-        "category": None,
-        "step_completed": False,
-        "next_step": Step.STEP1,
-        "slots": {},
-        "collected_fields": {},
-        "final_json": None,
-    }
-
+# ---------------------------------------------------------------------------
+# Обработчики шагов
+# ---------------------------------------------------------------------------
 
 def _run_offer_europrotocol(query: str, history: list, slots: dict) -> dict:
     q = query.strip().lower()
@@ -384,8 +250,8 @@ def _run_general_consultant(
     feedback_db,
 ) -> dict:
     """
-    Режим консультанта без шагового сценария.
-    Пользователь отказался от заполнения протокола.
+    Режим общего консультанта — без шагового сценария.
+    Используется при current_step=None и при CONSULTANT_ONLY.
     """
     try:
         with _make_giga() as giga:
@@ -405,10 +271,175 @@ def _run_general_consultant(
             )
 
         return _ok(answer, "llm", category)
+
     except Exception as e:
-        print(f"[core] consultant_only error: {e}")
+        print(f"[core] general_consultant error: {e}")
         return _ok(
             "Произошла ошибка. Если нужна срочная помощь — звоните 112.",
             "error",
             None,
         )
+
+
+def _try_handle_as_general_question(
+    query: str,
+    history: list,
+    db,
+    feedback_db,
+) -> dict | None:
+    """
+    Проверяет, является ли запрос общим вопросом (не ответом на текущий шаг).
+    Если да — генерирует ответ. Если нет или ошибка — возвращает None.
+    """
+    if _looks_like_step_answer(query):
+        return None
+
+    try:
+        with _make_giga() as giga:
+            classifier_history = build_history(history, component="classifier")
+            meta = meta_classify(giga, query, classifier_history)
+
+            if meta["category"] != "general_questions":
+                return None
+
+            context = get_context_for_category(db, feedback_db, query, "general_questions")
+            plan = {
+                "category": "general_questions",
+                "stage": "general_questions",
+                "answer_type": "info",
+                "algorithm_block": -1,
+            }
+            generator_history = build_history(
+                history, component="generator", category="general_questions"
+            )
+            answer, _ = _generate_with_selfcheck(
+                giga, query, context, plan,
+                algorithm_slice="",
+                generator_history=generator_history,
+            )
+            return _ok(answer, "llm", "general_questions")
+
+    except Exception as e:
+        print(f"[core] general question check error: {e}")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Генерация с самопроверкой
+# ---------------------------------------------------------------------------
+
+def _generate_with_selfcheck(
+    giga: GigaChat,
+    query: str,
+    context: str,
+    plan: dict,
+    algorithm_slice: str,
+    generator_history: str,
+) -> tuple[str, float]:
+    raw = generate_answer(
+        giga, query, context, plan,
+        algorithm=algorithm_slice,
+        history_text=generator_history,
+    )
+
+    if not _should_run_selfcheck(raw):
+        return raw, 1.0
+
+    for attempt in range(_MAX_IMPROVE_ATTEMPTS):
+        verdict, conf, issues, improved = improve_answer(giga, query, raw, context)
+
+        if verdict == "GOOD":
+            return raw, conf
+
+        raw = improved
+        if issues:
+            print(f"[core] self-check attempt {attempt + 1}: {issues[:80]}")
+
+        if conf >= _CONFIDENCE_THRESHOLD:
+            break
+
+    return raw, 0.0
+
+
+# ---------------------------------------------------------------------------
+# Вспомогательные функции
+# ---------------------------------------------------------------------------
+
+def _make_giga() -> GigaChat:
+    return GigaChat(
+        credentials=GIGA_AUTH,
+        verify_ssl_certs=False,
+        scope="GIGACHAT_API_B2B",
+    )
+
+
+def _looks_like_step_answer(query: str) -> bool:
+    """Короткий ответ в контексте шага — скорее всего ответ, а не самостоятельный вопрос."""
+    q = query.strip().lower().rstrip("!.,")
+    if len(q.split()) <= 3:
+        return True
+    starts = ("да ", "нет ", "ага ", "нету ", "есть ", "нет,", "да,")
+    return any(q.startswith(s) for s in starts)
+
+
+def _should_run_selfcheck(answer: str) -> bool:
+    """Запускаем self_check только при явных маркерах неуверенности."""
+    answer_lower = answer.lower()
+    return any(marker in answer_lower for marker in _UNCERTAINTY_MARKERS)
+
+
+def _handle_with_error_guard(handler, step_name: str) -> dict:
+    """
+    Вызывает handler(giga) в контексте GigaChat.
+    При любой ошибке возвращает безопасный ответ.
+    """
+    try:
+        with _make_giga() as giga:
+            return handler(giga)
+    except Exception as e:
+        print(f"[core] {step_name} error: {e}")
+        return _step_error_response()
+
+
+def _ok(answer: str, source: str, category: str | None) -> dict:
+    return {
+        "answer": answer,
+        "source": source,
+        "category": category,
+        "step_completed": False,
+        "next_step": None,
+        "slots": None,
+        "collected_fields": None,
+        "final_json": None,
+    }
+
+
+def _step_response_to_dict(result: StepResponse, source: str) -> dict:
+    """Преобразует StepResponse в dict для возврата бэкенду."""
+    return {
+        "answer": result.answer,
+        "source": source,
+        "category": None,
+        "step_completed": result.step_completed,
+        "next_step": result.next_step,
+        "slots": result.slots or {},
+        "collected_fields": result.collected_fields or {},
+        "final_json": result.final_json,
+    }
+
+
+def _step_error_response() -> dict:
+    """Безопасный ответ при ошибке шагового режима."""
+    return {
+        "answer": (
+            "Произошла техническая ошибка. "
+            "Если вы в опасной ситуации — немедленно звоните 112."
+        ),
+        "source": "error",
+        "category": None,
+        "step_completed": False,
+        "next_step": Step.STEP1,
+        "slots": {},
+        "collected_fields": {},
+        "final_json": None,
+    }
