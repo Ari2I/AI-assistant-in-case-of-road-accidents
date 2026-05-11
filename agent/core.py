@@ -24,7 +24,7 @@ from evaluation.critic import critic_rate_answer
 from rag.feedback_db import save_good_qa
 from rag.db_manager import get_main_db, get_feedback_db, get_disagreement_db
 from templates.matcher import match_template
-from agent.step2_europrotocol import process_step2_with_llm
+from agent.step2_europrotocol import process_step2_with_llm, process_step2_check
 from agent.step1_stateless import process_step1_with_llm
 from agent.disagreement_helper import run_disagreement_help
 from agent.step3_insurance import process_step3
@@ -202,8 +202,29 @@ def _run_offer_europrotocol(query: str, history: list, slots: dict) -> dict:
     REFUSE = {"нет", "не хочу", "не буду", "откажусь", "гибдд", "no"}
 
     if any(kw in q for kw in AGREE):
+        # Запускаем проверку Европротокола с учётом наличия приложения
+        # has_app=True по умолчанию — если пользователь не указал иное,
+        # считаем что приложение доступно (он может использовать «Помощник ОСАГО»)
+        check_result = process_step2_check(slots, has_app=True)
+
+        # Формируем ответ с конкретным лимитом выплаты
+        limits = check_result.limits
+        if limits:
+            base_limit = limits.get("base", 0)
+            if base_limit >= 400_000:
+                limit_text = "400 000 руб."
+            elif base_limit >= 200_000:
+                limit_text = "200 000 руб."
+            else:
+                limit_text = "100 000 руб."
+        else:
+            limit_text = "100 000 руб."
         return {
-            "answer": "Отлично, начинаем заполнение Европротокола.",
+            "answer": (
+                f"Отлично, начинаем заполнение Европротокола. "
+                f"Ваш максимальный лимит выплаты — {limit_text}. "
+                f"{check_result.recommendation}"
+            ),
             "source": "offer",
             "category": None,
             "step_completed": True,
@@ -228,10 +249,24 @@ def _run_offer_europrotocol(query: str, history: list, slots: dict) -> dict:
             "final_json": None,
         }
 
+    # Первое обращение к OFFER_EUROPROTOCOL — показываем предложение с лимитом
+    # Вычисляем лимит заранее, чтобы пользователь знал условия
+    check_result = process_step2_check(slots, has_app=True)
+    limits = check_result.limits
+    if limits:
+        base_limit = limits.get("base", 0)
+        if base_limit >= 400_000:
+            limit_text = "400 000 руб."
+        elif base_limit >= 200_000:
+            limit_text = "200 000 руб."
+        else:
+            limit_text = "100 000 руб."
+    else:
+        limit_text = "100 000 руб."
     return {
         "answer": (
-            "Скажите, пожалуйста: хотите заполнить Европротокол сейчас, "
-            "или предпочтёте вызвать ГИБДД?"
+            f"Вы можете оформить Европротокол. Максимальная выплата — до {limit_text}. "
+            f"Хотите заполнить его сейчас или предпочтёте вызвать ГИБДД?"
         ),
         "source": "offer",
         "category": None,
