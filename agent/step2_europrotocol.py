@@ -7,6 +7,14 @@ Step 2: Пошаговое заполнение Европротокола.
   - final_json.data: вложенная структура (accident / vehicle_a / vehicle_b / ...).
     Передаётся бэкенду для генерации PDF.
 
+Реформулировка текстовых полей:
+  Поля с произвольным описанием (обстоятельства, повреждения, схема) не сохраняются
+  напрямую из слов пользователя. LLM предлагает официальную формулировку,
+  пользователь подтверждает / редактирует / отклоняет.
+
+  Ожидающая подтверждения формулировка хранится в collected_fields под
+  ключом _PENDING_KEY и передаётся Django между запросами как часть словаря.
+
 Структура вопросов:
   FIELDS_CONFIG описывает 13 групп вопросов. Каждая группа заполняет
   один или несколько плоских ключей. Группа считается завершённой,
@@ -31,11 +39,68 @@ LIMIT_WITH_APP_NO_DISAGREEMENT = 400_000
 LIMIT_WITH_APP_DISAGREEMENT = 200_000
 
 # ---------------------------------------------------------------------------
+# Ключ для хранения ожидающей подтверждения реформулировки
+# ---------------------------------------------------------------------------
+
+_PENDING_KEY = "_pending_reformulation"
+
+# ---------------------------------------------------------------------------
+# Поля, требующие реформулировки перед сохранением.
+# Числовые, именные и идентификационные поля реформулировки не требуют.
+# ---------------------------------------------------------------------------
+
+_FIELDS_NEEDING_REFORMULATION: frozenset[str] = frozenset({
+    "circumstances",
+    "scheme",
+    "vehicle_a_damage",
+    "vehicle_b_damage",
+})
+
+_FIELD_DESCRIPTIONS_FOR_REFORMULATION: dict[str, str] = {
+    "circumstances": "Обстоятельства ДТП (пункт 11 / оборотная сторона, пункт 15)",
+    "scheme":        "Описание схемы ДТП (пункт 12)",
+    "vehicle_a_damage": "Характер и перечень видимых повреждений ТС А (пункт 9)",
+    "vehicle_b_damage": "Характер и перечень видимых повреждений ТС Б (пункт 9)",
+}
+
+_REFORMULATION_PROMPT = """\
+Ты — помощник по оформлению Европротокола о ДТП.
+
+Пользователь описал произошедшее в произвольной форме. Переформулируй его описание \
+для официального извещения о дорожно-транспортном происшествии.
+
+Требования:
+1. Официально-деловой стиль, без разговорных выражений.
+2. Для обстоятельств: указывай направление движения, манёвры, взаимное положение ТС \
+   (например: «ТС А двигалось по ул. Ленина в направлении севера, выполняло поворот налево...»).
+3. Для повреждений: используй только термины "вмятина", "царапина", "трещина", "скол", \
+   "разрыв", "разрушение" с указанием конкретной детали \
+   (например: «передний бампер — трещина, левое переднее крыло — вмятина»).
+4. Для схемы: описывай взаимное положение ТС, дороги, знаки, направление движения \
+   (например: «ТС А стояло у правой обочины, ТС Б въехало в заднюю часть ТС А»).
+5. Текст должен быть готов для вставки в соответствующую графу Европротокола без изменений.
+
+Поле: {field_description}
+Исходный текст пользователя: {original_text}
+
+Верни ТОЛЬКО переформулированный текст — без пояснений, кавычек и markdown.
+"""
+
+# Фразы, которые означают одобрение реформулировки
+_APPROVAL_PHRASES: frozenset[str] = frozenset({
+    "да", "ок", "ok", "хорошо", "верно", "правильно", "согласен", "согласна",
+    "подтверждаю", "подтверждаю.", "да.", "ок.", "ладно", "отлично", "супер",
+    "принято", "принять", "сохранить", "сохрани",
+})
+
+# Фразы, которые означают отклонение реформулировки (сохраняем оригинал)
+_REJECTION_PHRASES: frozenset[str] = frozenset({
+    "нет", "нет.", "отклонить", "отклоняю", "не подходит", "не то",
+    "неверно", "неправильно", "оставь оригинал", "оставить оригинал",
+})
+
+# ---------------------------------------------------------------------------
 # Конфигурация вопросов
-#
-# keys         — все плоские ключи, которые заполняет эта группа
-# required_keys — ключи, обязательные для закрытия группы
-#                (если не указано — все keys считаются обязательными)
 # ---------------------------------------------------------------------------
 
 FIELDS_CONFIG: dict[str, dict] = {
@@ -54,7 +119,7 @@ FIELDS_CONFIG: dict[str, dict] = {
             "Свидетелей нет — так и напишите."
         ),
         "keys": ["location", "witnesses"],
-        "required_keys": ["location"],  # witnesses опциональны
+        "required_keys": ["location"],
     },
     "vehicle_a_base": {
         "prompt": "Данные автомобиля А: марка/модель и государственный номер.",
@@ -140,10 +205,8 @@ FIELDS_CONFIG: dict[str, dict] = {
     },
 }
 
-# Порядок обхода групп вопросов
 FIELDS_ORDER: list[str] = list(FIELDS_CONFIG.keys())
 
-# Все плоские ключи с описаниями для промпта извлечения
 _FLAT_KEYS_DESCRIPTION = """
 date: дата ДТП (формат: ДД.ММ.ГГГГ)
 time: время ДТП (формат: ЧЧ:ММ)
@@ -206,7 +269,7 @@ _FIELD_EXTRACTION_PROMPT = """\
 
 
 # ---------------------------------------------------------------------------
-# Проверка возможности Европротокола (используется из core.py)
+# Проверка возможности Европротокола
 # ---------------------------------------------------------------------------
 
 class StopFactor:
@@ -351,6 +414,176 @@ def process_step2_check(slots: dict, has_app: bool) -> EuroprotocolCheckResult:
 
 
 # ---------------------------------------------------------------------------
+# Реформулировка текстовых полей
+# ---------------------------------------------------------------------------
+
+def _reformulate_field(giga: GigaChat, field: str, original_text: str) -> str:
+    """
+    Вызывает LLM для реформулировки произвольного описания в официальный стиль
+    Европротокола.
+
+    При ошибке возвращает оригинальный текст без изменений.
+    """
+    field_description = _FIELD_DESCRIPTIONS_FOR_REFORMULATION.get(field, field)
+    prompt = _REFORMULATION_PROMPT.format(
+        field_description=field_description,
+        original_text=original_text,
+    )
+    try:
+        payload = Chat(
+            messages=[
+                Messages(
+                    role=MessagesRole.SYSTEM,
+                    content=(
+                        "Ты — юридический редактор. Переформулируй текст для "
+                        "официального протокола о ДТП. Отвечай только готовым текстом."
+                    ),
+                ),
+                Messages(role=MessagesRole.USER, content=prompt),
+            ],
+            temperature=0.1,
+        )
+        response = giga.chat(payload)
+        result = response.choices[0].message.content.strip().strip('"').strip("'")
+        return result if result else original_text
+    except Exception as e:
+        print(f"[step2] reformulation error for '{field}': {e}")
+        return original_text
+
+
+def _build_pending_proposal(
+    giga: GigaChat,
+    field: str,
+    original: str,
+    remaining: dict[str, str],
+) -> tuple[dict, str]:
+    """
+    Реформулирует первое поле из очереди и формирует структуру pending + текст ответа.
+
+    Returns:
+        pending_state: dict для сохранения в collected_fields[_PENDING_KEY]
+        answer_text: текст для пользователя
+    """
+    reformulated = _reformulate_field(giga, field, original)
+    field_desc = _FIELD_DESCRIPTIONS_FOR_REFORMULATION.get(field, field)
+
+    pending_state = {
+        "field": field,
+        "original": original,
+        "reformulated": reformulated,
+        "remaining": remaining,
+    }
+
+    answer_text = (
+        f"На основе вашего описания я подготовил формулировку "
+        f"для поля «{field_desc}»:\n\n"
+        f"«{reformulated}»\n\n"
+        f"Подтвердите вариант («да»), напишите свою версию или отклоните («нет», "
+        f"тогда сохранится ваш исходный текст без изменений)."
+    )
+
+    return pending_state, answer_text
+
+
+def _handle_reformulation_response(
+    giga: GigaChat,
+    query: str,
+    collected_fields: dict,
+    pending: dict,
+) -> StepResponse:
+    """
+    Обрабатывает ответ пользователя на предложение реформулировки.
+
+    Логика:
+      - "да" / одобрение → сохраняем reformulated
+      - "нет" / отклонение → сохраняем original (предупреждаем)
+      - любой другой текст → считаем правкой пользователя, сохраняем его вариант
+    """
+    q = query.strip().lower().rstrip("!.,?")
+    field = pending["field"]
+
+    if q in _APPROVAL_PHRASES:
+        saved_value = pending["reformulated"]
+        save_note = ""
+    elif q in _REJECTION_PHRASES:
+        saved_value = pending["original"]
+        save_note = (
+            "\n\n⚠️ Сохранена ваша исходная формулировка без изменений. "
+            "Это может затруднить обработку страховой компанией."
+        )
+    else:
+        # Пользователь предоставил собственный вариант
+        saved_value = query.strip()
+        save_note = ""
+
+    collected_fields[field] = saved_value
+
+    # Убираем pending
+    collected_fields.pop(_PENDING_KEY, None)
+
+    # Есть ещё поля в очереди на реформулировку?
+    remaining: dict[str, str] = pending.get("remaining", {})
+    if remaining:
+        next_field, next_original = next(iter(remaining.items()))
+        next_remaining = {k: v for k, v in remaining.items() if k != next_field}
+        next_pending, next_answer = _build_pending_proposal(
+            giga, next_field, next_original, next_remaining
+        )
+        collected_fields[_PENDING_KEY] = next_pending
+
+        prefix = "Записано." + save_note + "\n\n"
+        return StepResponse(
+            answer=prefix + next_answer,
+            step_completed=False,
+            next_step=Step.STEP2,
+            collected_fields=collected_fields,
+        )
+
+    # Все реформулировки обработаны — переходим к следующей группе
+    if save_note:
+        prefix = "Записан ваш вариант." + save_note + "\n\n"
+    else:
+        prefix = "Записано.\n\n"
+
+    return _continue_after_save(collected_fields, prefix)
+
+
+def _continue_after_save(collected_fields: dict, prefix: str = "") -> StepResponse:
+    """
+    Определяет следующее действие после сохранения полей:
+    либо задаёт следующий вопрос, либо формирует final_json.
+    """
+    current_group = _get_current_group(collected_fields)
+
+    if current_group is None:
+        # Все группы закрыты
+        final_json = {
+            "type": "europrotocol",
+            "status": "ready_for_pdf",
+            "data": _build_final_data(collected_fields),
+        }
+        return StepResponse(
+            answer=(
+                prefix
+                + "✅ Все данные собраны! Направьте извещение в страховую компанию "
+                "в течение 5 рабочих дней. Данные переданы для формирования PDF."
+            ),
+            step_completed=True,
+            next_step=Step.DONE,
+            collected_fields=collected_fields,
+            final_json=final_json,
+        )
+
+    config = FIELDS_CONFIG[current_group]
+    return StepResponse(
+        answer=prefix + f"{config['instruction']}\n\n{config['prompt']}",
+        step_completed=False,
+        next_step=Step.STEP2,
+        collected_fields=collected_fields,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Вспомогательные функции
 # ---------------------------------------------------------------------------
 
@@ -358,6 +591,7 @@ def _get_current_group(collected: dict) -> str | None:
     """
     Возвращает id первой незавершённой группы вопросов.
     Группа завершена, если все её required_keys заполнены.
+    Ключ _PENDING_KEY не учитывается при проверке.
     """
     for group_id, config in FIELDS_CONFIG.items():
         required = config.get("required_keys", config["keys"])
@@ -375,10 +609,15 @@ def _extract_fields_llm(
     """
     Вызывает LLM для извлечения плоских ключей из сообщения пользователя.
     Делает до 2 попыток при пустом результате.
+
+    Ключ _PENDING_KEY исключён из existing при передаче в промпт.
     """
+    # Исключаем служебный ключ из вывода "уже заполненных полей"
+    existing_clean = {k: v for k, v in existing.items() if k != _PENDING_KEY}
+
     filled_str = (
-        "\n".join(f"  {k}: {v}" for k, v in existing.items())
-        if existing else "  (нет заполненных полей)"
+        "\n".join(f"  {k}: {v}" for k, v in existing_clean.items())
+        if existing_clean else "  (нет заполненных полей)"
     )
 
     current_keys = ""
@@ -435,6 +674,9 @@ def _map_slots_to_fields(giga: GigaChat, slots: dict, history: list) -> dict:
     """
     Извлекает данные для step2 из всей истории диалога (step1).
     Вызывается ОДИН РАЗ при первом входе в step2.
+
+    Текстовые поля, требующие реформулировки, НЕ сохраняются сразу — они будут
+    предложены пользователю для подтверждения в первом же шаге step2.
     """
     if not history:
         return {}
@@ -452,7 +694,10 @@ def _map_slots_to_fields(giga: GigaChat, slots: dict, history: list) -> dict:
             current_group="",
         )
         if prefilled:
-            print(f"[step2] prefilled {len(prefilled)} fields from history: {list(prefilled.keys())}")
+            print(
+                f"[step2] prefilled {len(prefilled)} fields from history: "
+                f"{list(prefilled.keys())}"
+            )
         return prefilled
     except Exception as e:
         print(f"[step2] prefill from history error: {e}")
@@ -462,6 +707,7 @@ def _map_slots_to_fields(giga: GigaChat, slots: dict, history: list) -> dict:
 def _build_final_data(fields: dict) -> dict:
     """
     Конвертирует плоский dict collected_fields в вложенную структуру для бэкенда.
+    Служебный ключ _PENDING_KEY при этом отбрасывается.
     """
     return {
         "accident": {
@@ -496,9 +742,9 @@ def _build_final_data(fields: dict) -> dict:
             "damage":         fields.get("vehicle_b_damage"),
             "fault":          fields.get("vehicle_b_fault"),
         },
-        "circumstances":       fields.get("circumstances"),
-        "scheme":              fields.get("scheme"),
-        "has_disagreement":    fields.get("has_disagreement", False),
+        "circumstances":        fields.get("circumstances"),
+        "scheme":               fields.get("scheme"),
+        "has_disagreement":     fields.get("has_disagreement", False),
         "signatures_confirmed": fields.get("signatures_confirmed"),
     }
 
@@ -517,54 +763,82 @@ def process_step2_with_llm(
     """
     Обрабатывает один шаг заполнения Европротокола.
 
-    При первом входе (collected_fields пустой) пытается prefill из истории step1.
-    Затем извлекает данные из текущего сообщения, обновляет collected_fields
-    и возвращает вопрос по следующей незавершённой группе или финальный JSON.
+    Алгоритм:
+    1. Если в collected_fields есть _PENDING_KEY — пользователь отвечает на
+       предложение реформулировки. Передаём управление _handle_reformulation_response.
+    2. При первом входе (collected_fields пустой) prefill из истории step1.
+    3. Извлекаем данные из текущего сообщения пользователя.
+    4. Структурные поля (даты, имена, номера) сохраняем сразу.
+    5. Текстовые поля (_FIELDS_NEEDING_REFORMULATION) — реформулируем и предлагаем
+       пользователю для подтверждения через _PENDING_KEY.
+    6. Если все группы закрыты — формируем final_json.
     """
-    # Prefill из истории step1 — только при первом входе
+
+    # ШАГ 1: ожидаем ответа на реформулировку
+    pending = collected_fields.get(_PENDING_KEY)
+    if pending:
+        return _handle_reformulation_response(giga, query, collected_fields, pending)
+
+    # ШАГ 2: prefill из истории step1 при первом входе
     if not collected_fields:
         collected_fields = _map_slots_to_fields(giga, slots, history)
 
     # Определяем текущую группу ДО извлечения (нужна как подсказка LLM)
     current_group = _get_current_group(collected_fields)
 
-    # Извлекаем данные из сообщения пользователя
+    # ШАГ 3: извлечение данных из сообщения пользователя
     try:
         new_data = _extract_fields_llm(giga, query, collected_fields, current_group or "")
-        for k, v in new_data.items():
-            if v is not None:
-                collected_fields[k] = v
     except Exception as e:
         print(f"[step2] extraction error: {e}")
+        new_data = {}
 
-    # Пересчитываем текущую группу после обновления
-    current_group = _get_current_group(collected_fields)
-
-    # Все группы закрыты → формируем final_json
-    if current_group is None:
-        final_json = {
-            "type": "europrotocol",
-            "status": "ready_for_pdf",
-            "data": _build_final_data(collected_fields),
-        }
+    if not new_data:
+        # Ничего не извлекли — просто повторяем вопрос текущей группы
+        if current_group is None:
+            return _continue_after_save(collected_fields)
+        config = FIELDS_CONFIG[current_group]
         return StepResponse(
-            answer=(
-                "✅ Все данные собраны! Направьте извещение в страховую компанию "
-                "в течение 5 рабочих дней. Данные переданы для формирования PDF."
-            ),
-            step_completed=True,
-            next_step=Step.DONE,
+            answer=f"{config['instruction']}\n\n{config['prompt']}",
+            step_completed=False,
+            next_step=Step.STEP2,
             collected_fields=collected_fields,
-            final_json=final_json,
         )
 
-    # Задаём вопрос по текущей группе
-    config = FIELDS_CONFIG[current_group]
-    answer = f"{config['instruction']}\n\n{config['prompt']}"
+    # ШАГ 4: разделяем поля на «сохранить сразу» и «требуют реформулировки»
+    to_save_directly: dict[str, object] = {}
+    to_reformulate: dict[str, str] = {}
 
-    return StepResponse(
-        answer=answer,
-        step_completed=False,
-        next_step=Step.STEP2,
-        collected_fields=collected_fields,
-    )
+    for k, v in new_data.items():
+        if v is None:
+            continue
+        if k in _FIELDS_NEEDING_REFORMULATION and isinstance(v, str) and v.strip():
+            # Поле уже заполнено → не перезаписываем
+            if not collected_fields.get(k):
+                to_reformulate[k] = v
+        else:
+            to_save_directly[k] = v
+
+    # Сохраняем структурные поля немедленно
+    for k, v in to_save_directly.items():
+        collected_fields[k] = v
+
+    # ШАГ 5: если есть текстовые поля — запускаем цикл реформулировки
+    if to_reformulate:
+        first_field, first_original = next(iter(to_reformulate.items()))
+        remaining = {k: v for k, v in to_reformulate.items() if k != first_field}
+
+        pending_state, answer_text = _build_pending_proposal(
+            giga, first_field, first_original, remaining
+        )
+        collected_fields[_PENDING_KEY] = pending_state
+
+        return StepResponse(
+            answer=answer_text,
+            step_completed=False,
+            next_step=Step.STEP2,
+            collected_fields=collected_fields,
+        )
+
+    # ШАГ 6: только структурные поля → продолжаем сбор
+    return _continue_after_save(collected_fields)
