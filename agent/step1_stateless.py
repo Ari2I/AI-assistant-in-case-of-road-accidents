@@ -158,7 +158,7 @@ _PREFILL_EXTRACTION_PROMPT = """\
 def _try_prefill_fields(giga: GigaChat, message: str) -> dict:
     """
     Лёгкий вызов LLM для извлечения очевидных полей step2 из одного
-    сообщения step1. При любой ошибке возвращает пустой dict —
+    сообщения step1. При люб ой ошибке возвращает пустой dict -
     не блокирует основной pipeline.
     """
     prompt = _PREFILL_EXTRACTION_PROMPT.format(message=message)

@@ -212,6 +212,9 @@ def _run_offer_europrotocol(query: str, history: list, slots: dict) -> dict:
                 limit_text = "100 000 руб."
         else:
             limit_text = "100 000 руб."
+
+        prefilled = slots.get("_prefilled", {})
+        slots_clean = {k: v for k, v in slots.items() if k != "_prefilled"}
         return {
             "answer": (
                 f"Отлично, начинаем заполнение Европротокола. "
@@ -222,8 +225,8 @@ def _run_offer_europrotocol(query: str, history: list, slots: dict) -> dict:
             "category": None,
             "step_completed": True,
             "next_step": Step.STEP2,
-            "slots": slots,
-            "collected_fields": slots.pop("_prefilled", {}),
+            "slots": slots_clean,
+            "collected_fields": prefilled,
             "final_json": None,
         }
 
