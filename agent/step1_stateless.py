@@ -140,16 +140,16 @@ _PREFILL_EXTRACTION_PROMPT = """\
 Примеры:
 
 Сообщение: "столкнулся с Toyota Camry А123БВ777 на ул. Ленина"
-Ответ: {"location": "ул. Ленина", "vehicle_b_make_model": "Toyota Camry",
-"vehicle_b_reg_number": "А123БВ777"}
+Ответ: {{"location": "ул. Ленина", "vehicle_b_make_model": "Toyota Camry",
+"vehicle_b_reg_number": "А123БВ777"}}
 
 Сообщение: "ДТП было 15.01.2024 в 14:30, я на Honda Civic Е456РТ77"
-Ответ: {"date": "15.01.2024", "time": "14:30",
+Ответ: {{"date": "15.01.2024", "time": "14:30",
 "vehicle_a_make_model": "Honda Civic",
-"vehicle_a_reg_number": "Е456РТ77"}
+"vehicle_a_reg_number": "Е456РТ77"}}
 
 Сообщение: "нет пострадавших"
-Ответ: {}
+Ответ: {{}}
 
 Сообщение пользователя: "{message}"
 """
