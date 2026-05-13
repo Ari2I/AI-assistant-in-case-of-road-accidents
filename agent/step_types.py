@@ -10,7 +10,6 @@ from typing import Any
 
 
 class Step(str, Enum):
-    GENERAL             = "general"
     STEP1               = "step1"
     STEP2               = "step2"
     STEP3               = "step3"

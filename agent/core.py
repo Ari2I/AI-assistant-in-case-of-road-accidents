@@ -1,13 +1,12 @@
 """
-Pipeline v4.1 — рефакторинг core.py.
+Pipeline v4.2 — удаление general режима.
 
-Изменения vs v4.0:
-  - db_manager используется как fallback, если Django не передал базы
-  - Исправлен баг: current_step=None теперь вызывает _run_general_consultant
-    вместо возврата бесполезного статичного сообщения
-  - Удалены бесполезные обёртки _run_step1 / _run_step2
-  - Упрощены сравнения current_step (str, Enum — достаточно одного значения)
-  - Логика маршрутизации вынесена в _route_by_step для читаемости
+Изменения vs v4.1:
+  - Удалён Step.GENERAL — агент работает только по шагам (step1, step2, step3)
+  - Агент одновременно является консультантом по вопросам ДТП и ПДД на каждом шаге
+  - Функция _try_handle_as_general_question удалена — общие вопросы обрабатываются
+    в контексте текущего шага через meta_classifier и RAG
+  - current_step=None больше не вызывает _run_general_consultant — это ошибка состояния
 """
 
 from gigachat import GigaChat
@@ -143,10 +142,6 @@ def _route_by_step(
                 "disagreement_help",
             )
 
-        general = _try_handle_as_general_question(query, history, db, feedback_db)
-        if general:
-            return general
-
         return _handle_with_error_guard(
             lambda giga: _step_response_to_dict(
                 process_step1_with_llm(giga, query, history, slots),
@@ -157,9 +152,6 @@ def _route_by_step(
 
     # --- STEP 2: заполнение Европротокола ---
     if current_step == Step.STEP2:
-        general = _try_handle_as_general_question(query, history, db, feedback_db)
-        if general:
-            return general
 
         return _handle_with_error_guard(
             lambda giga: _step_response_to_dict(
@@ -185,11 +177,12 @@ def _route_by_step(
 
     # --- Режим консультанта (пользователь отказался от Европротокола) ---
     if current_step == Step.CONSULTANT_ONLY:
-        return _run_general_consultant(query, history, db, feedback_db)
+        return _run_consultant(query, history, db, feedback_db)
 
     # --- current_step is None или неизвестное значение ---
-    # Общий консультант: отвечаем на вопросы без шагового сценария
-    return _run_general_consultant(query, history, db, feedback_db)
+    # Ошибка состояния: должен быть установлен один из шагов или CONSULTANT_ONLY
+    print(f"[core] WARNING: unknown current_step={current_step!r}, treating as consultant")
+    return _run_consultant(query, history, db, feedback_db)
 
 
 # ---------------------------------------------------------------------------
@@ -278,15 +271,17 @@ def _run_offer_europrotocol(query: str, history: list, slots: dict) -> dict:
     }
 
 
-def _run_general_consultant(
+def _run_consultant(
     query: str,
     history: list,
     db,
     feedback_db,
 ) -> dict:
     """
-    Режим общего консультанта — без шагового сценария.
-    Используется при current_step=None и при CONSULTANT_ONLY.
+    Режим консультанта по вопросам ДТП и ПДД.
+    Используется при CONSULTANT_ONLY и как fallback для неизвестных current_step.
+
+    Агент классифицирует вопрос через meta_classifier и отвечает на основе RAG-контекста.
     """
     try:
         with _make_giga() as giga:
@@ -308,56 +303,12 @@ def _run_general_consultant(
         return _ok(answer, "llm", category)
 
     except Exception as e:
-        print(f"[core] general_consultant error: {e}")
+        print(f"[core] consultant error: {e}")
         return _ok(
             "Произошла ошибка. Если нужна срочная помощь — звоните 112.",
             "error",
             None,
         )
-
-
-def _try_handle_as_general_question(
-    query: str,
-    history: list,
-    db,
-    feedback_db,
-) -> dict | None:
-    """
-    Проверяет, является ли запрос общим вопросом (не ответом на текущий шаг).
-    Если да — генерирует ответ. Если нет или ошибка — возвращает None.
-    """
-    if _looks_like_step_answer(query):
-        return None
-
-    try:
-        with _make_giga() as giga:
-            classifier_history = build_history(history, component="classifier")
-            meta = meta_classify(giga, query, classifier_history)
-
-            if meta["category"] != "general_questions":
-                return None
-
-            context = get_context_for_category(db, feedback_db, query, "general_questions")
-            plan = {
-                "category": "general_questions",
-                "stage": "general_questions",
-                "answer_type": "info",
-                "algorithm_block": -1,
-            }
-            generator_history = build_history(
-                history, component="generator", category="general_questions"
-            )
-            answer, _ = _generate_with_selfcheck(
-                giga, query, context, plan,
-                algorithm_slice="",
-                generator_history=generator_history,
-            )
-            return _ok(answer, "llm", "general_questions")
-
-    except Exception as e:
-        print(f"[core] general question check error: {e}")
-        return None
-
 
 # ---------------------------------------------------------------------------
 # Генерация с самопроверкой

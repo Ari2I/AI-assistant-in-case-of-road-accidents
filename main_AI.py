@@ -3,9 +3,9 @@ CLI для локального тестирования ДТП-ассистен
 Симулирует поведение Django-бэкенда: хранит состояние локально
 и передаёт его в run_agent() при каждом запросе.
 
-Режимы:
-  1. Шаговый flow (step1 -> step2) — основной режим тестирования
-  2. General-пайплайн — вопросы по ДТП/ОСАГО без шагового режима
+Режим:
+  - Шаговый flow (step1 -> step2 -> step3) — основной режим работы агента
+  - Агент также работает как консультант по вопросам ДТП и ПДД на каждом шаге
 """
 
 from agent.core import run_agent, rate_answer
@@ -13,15 +13,11 @@ from agent.step_types import Step
 
 
 def _map_slots_to_fields(slots: dict) -> dict:
-    """
-    Переносит данные из step1 в начальный контекст step2.
-    Базовая реализация: пустой перенос.
-    """
+    """Переносит данные из step1 в начальный контекст step2."""
     return {}
 
 
-def _print_state(current_step: str, slots: dict,
-                 collected_fields: dict) -> None:
+def _print_state(current_step: str, slots: dict, collected_fields: dict) -> None:
     """Выводит текущее состояние диалога."""
     print(f"\n{'─' * 40}")
     print(f"  Шаг: {current_step}")
@@ -125,52 +121,9 @@ def run_step_flow() -> None:
                 print(f"Критик: {r['critic_score']}/5 — {r['critic_comment']}")
 
 
-def run_general_mode() -> None:
-    """General-пайплайн: вопросы по ДТП/ОСАГО (старый режим)."""
-    history: list[dict] = []
-    print("\n=== General-режим: вопросы по ДТП и ОСАГО ===")
-    print("Введите 'выход' для возврата в меню.\n")
-
-    while True:
-        query = input("Вы: ").strip()
-        if not query:
-            continue
-        if query.lower() == "выход":
-            break
-
-        response = run_agent(query=query, history=history)
-        print(f"\nАссистент [{response['source']}]: {response['answer']}\n")
-        history.append({"query": query, "answer": response["answer"]})
-
-        rating_str = input("Оценить (0-5 или Enter): ").strip()
-        if rating_str.isdigit():
-            rating = int(rating_str)
-            if 0 <= rating <= 5:
-                r = rate_answer(query=query,
-                                answer=response["answer"],
-                                rating=rating)
-                print(f"Критик: {r['critic_score']}/5 — {r['critic_comment']}")
-
-
 def main() -> None:
-    while True:
-        print("\n" + "=" * 45)
-        print("  ДТП-ассистент — локальное тестирование")
-        print("=" * 45)
-        print("  1. Шаговый режим (step1 → step2)")
-        print("  2. General-режим (вопросы по ДТП/ОСАГО)")
-        print("  0. Выход")
-        print("=" * 45)
-        choice = input("Выбор: ").strip()
-        if choice == "1":
-            run_step_flow()
-        elif choice == "2":
-            run_general_mode()
-        elif choice == "0":
-            print("До свидания!")
-            break
-        else:
-            print("Неверный ввод.")
+    """Запускает единый шаговый режим работы агента."""
+    run_step_flow()
 
 
 if __name__ == "__main__":
