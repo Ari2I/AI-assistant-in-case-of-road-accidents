@@ -81,7 +81,7 @@ _SLOT_EXTRACTION_PROMPT = """\
 
 Вопрос был про: osago_both (наличие ОСАГО)
 Сообщение: "да, они у нас есть, но второй водитель не вписан в него"
-Ответ: {{"safety_confirmed": null, "emergency_sign": null, "victims": null, "participants_count": null, "osago_both": falce, "disagreement": null}}
+Ответ: {{"safety_confirmed": null, "emergency_sign": null, "victims": null, "participants_count": null, "osago_both": false, "disagreement": null}}
 Пояснение: проблема с полисом (не вписан водитель) — это НЕ разногласия об обстоятельствах ДТП.
 
 Вопрос был про: osago_both (наличие ОСАГО)
@@ -111,6 +111,85 @@ _SLOT_EXTRACTION_PROMPT = """\
   "disagreement": true/false/null
 }}
 """
+
+# --- prefill ---
+
+_PREFILL_TARGET_KEYS: frozenset[str] = frozenset({
+    "date", "time", "location",
+    "vehicle_a_make_model", "vehicle_a_reg_number",
+    "vehicle_b_make_model", "vehicle_b_reg_number",
+})
+
+_PREFILL_EXTRACTION_PROMPT = """\
+Извлеки из сообщения пользователя данные для протокола о ДТП.
+Извлекай ТОЛЬКО то, что явно указано. Не додумывай.
+
+Целевые поля:
+- date: дата ДТП (формат ДД.ММ.ГГГГ)
+- time: время ДТП (формат ЧЧ:ММ)
+- location: место ДТП — город, улица, дом или км трассы
+- vehicle_a_make_model: марка и модель авто пользователя
+- vehicle_a_reg_number: госномер авто пользователя
+- vehicle_b_make_model: марка и модель авто второго участника
+- vehicle_b_reg_number: госномер авто второго участника
+
+Правила:
+- Если данных нет — не включай ключ в ответ.
+- Верни ТОЛЬКО валидный JSON без пояснений и markdown.
+
+Примеры:
+
+Сообщение: "столкнулся с Toyota Camry А123БВ777 на ул. Ленина"
+Ответ: {"location": "ул. Ленина", "vehicle_b_make_model": "Toyota Camry",
+"vehicle_b_reg_number": "А123БВ777"}
+
+Сообщение: "ДТП было 15.01.2024 в 14:30, я на Honda Civic Е456РТ77"
+Ответ: {"date": "15.01.2024", "time": "14:30",
+"vehicle_a_make_model": "Honda Civic",
+"vehicle_a_reg_number": "Е456РТ77"}
+
+Сообщение: "нет пострадавших"
+Ответ: {}
+
+Сообщение пользователя: "{message}"
+"""
+
+
+def _try_prefill_fields(giga: GigaChat, message: str) -> dict:
+    """
+    Лёгкий вызов LLM для извлечения очевидных полей step2 из одного
+    сообщения step1. При любой ошибке возвращает пустой dict —
+    не блокирует основной pipeline.
+    """
+    prompt = _PREFILL_EXTRACTION_PROMPT.format(message=message)
+    try:
+        payload = Chat(
+            messages=[
+                Messages(
+                    role=MessagesRole.SYSTEM,
+                    content="Ты — экстрактор данных. Отвечай только JSON.",
+                ),
+                Messages(role=MessagesRole.USER, content=prompt),
+            ],
+            temperature=0.0,
+        )
+        response = giga.chat(payload)
+        content = response.choices[0].message.content.strip()
+        if "```" in content:
+            for part in content.split("```"):
+                if part.strip().startswith("{"):
+                    content = part.strip()
+                    break
+        extracted = json.loads(content)
+        return {
+            k: v for k, v in extracted.items()
+            if k in _PREFILL_TARGET_KEYS and v
+        }
+    except Exception as e:
+        print(f"[step1] prefill extraction error: {e}")
+        return {}
+
+# --- конец prefill ---
 
 _SLOT_DESCRIPTIONS = {
     "safety_confirmed": "безопасность места ДТП (нет пожара, угрозы взрыва)",
@@ -442,7 +521,12 @@ def process_step1_with_llm(
     Обрабатывает один шаг сбора фактов.
     Возвращает StepResponse с обновлёнными слотами и следующим действием.
     """
-    merged = _init_slots(current_slots)
+    # Извлекаем и удаляем накопленный prefill из входящих слотов,
+    # чтобы _init_slots не скопировал его в merged как обычный слот.
+    accumulated_prefill: dict = dict(current_slots.get("_prefilled", {}))
+    current_slots_clean = {k: v for k, v in current_slots.items()
+                           if k != "_prefilled"}
+    merged = _init_slots(current_slots_clean)
 
     next_slot_before = next(
         (k for k in SLOT_ORDER if merged.get(k) is None), None
@@ -460,6 +544,12 @@ def process_step1_with_llm(
 
     print(f"[step1] slot={next_slot_before}, extracted={result}")
 
+    # Лёгкое извлечение данных для step2 из текущего сообщения
+    new_prefill = _try_prefill_fields(giga, query)
+    for k, v in new_prefill.items():
+        if k not in accumulated_prefill:
+            accumulated_prefill[k] = v
+
     for k, v in result.items():
         if v is None:
             continue
@@ -475,6 +565,7 @@ def process_step1_with_llm(
             step_completed=True,
             next_step=Step.CALL_GIBDD,
             slots=merged,
+            prefilled_fields=accumulated_prefill,
         )
 
     # Активация подрежима помощи при разногласиях
@@ -490,6 +581,7 @@ def process_step1_with_llm(
             step_completed=False,
             next_step=Step.STEP1,
             slots=merged,
+            prefilled_fields=accumulated_prefill,
         )
 
     # Проверка завершения сбора слотов
@@ -503,6 +595,7 @@ def process_step1_with_llm(
             step_completed=True,
             next_step=Step.OFFER_EUROPROTOCOL,
             slots=merged,
+            prefilled_fields=accumulated_prefill,
         )
 
     question = _ask_question(empty[0], history)
@@ -511,4 +604,5 @@ def process_step1_with_llm(
         step_completed=False,
         next_step=Step.STEP1,
         slots=merged,
+        prefilled_fields=accumulated_prefill,
     )

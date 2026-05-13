@@ -33,3 +33,4 @@ class StepResponse:
     slots: dict[str, Any] = field(default_factory=dict)
     collected_fields: dict[str, Any] = field(default_factory=dict)
     final_json: dict[str, Any] | None = None
+    prefilled_fields: dict[str, Any] = field(default_factory=dict)

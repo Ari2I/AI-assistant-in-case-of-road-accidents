@@ -223,7 +223,7 @@ def _run_offer_europrotocol(query: str, history: list, slots: dict) -> dict:
             "step_completed": True,
             "next_step": Step.STEP2,
             "slots": slots,
-            "collected_fields": {},
+            "collected_fields": slots.pop("_prefilled", {}),
             "final_json": None,
         }
 
@@ -402,13 +402,19 @@ def _ok(answer: str, source: str, category: str | None) -> dict:
 
 def _step_response_to_dict(result: StepResponse, source: str) -> dict:
     """Преобразует StepResponse в dict для возврата бэкенду."""
+    # Накопленный prefill сохраняем внутри slots под служебным ключом,
+    # чтобы Django передал его обратно при следующем запросе в step1.
+    slots_out = dict(result.slots or {})
+    if result.prefilled_fields:
+        slots_out["_prefilled"] = result.prefilled_fields
+
     return {
         "answer": result.answer,
         "source": source,
         "category": None,
         "step_completed": result.step_completed,
         "next_step": result.next_step,
-        "slots": result.slots or {},
+        "slots": slots_out,
         "collected_fields": result.collected_fields or {},
         "final_json": result.final_json,
     }
