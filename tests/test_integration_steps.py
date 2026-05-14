@@ -282,14 +282,46 @@ class TestFullFlow:
         Сценарий: step2 с предзаполненными полями -> final_json.
         """
         all_fields = {
-            "datetime":           "15.01.2024 14:30",
-            "location":           "г. Москва, ул. Ленина, д. 10",
-            "participant_a":      "Иванов И.И., полис XXX000",
-            "participant_b":      "Петров П.П., полис YYY111",
-            "circumstances":      "А двигался прямо, Б поворачивал",
-            "damage_description": "бампер — вмятина",
-            "scheme":             "А у обочины, Б въехал сзади",
-            "signatures":         "подпишут оба",
+            # datetime group
+            "date":                 "15.01.2024",
+            "time":                 "14:30",
+            # location_witnesses group
+            "location":             "г. Москва, ул. Ленина, д. 10",
+            "witnesses":            "нет",
+            # vehicle_a_base group
+            "vehicle_a_make_model": "Toyota Camry",
+            "vehicle_a_reg_number": "А123БВ777",
+            # vehicle_a_persons group
+            "vehicle_a_owner_name": "Иванов И.И.",
+            "vehicle_a_driver_name": "Иванов И.И.",
+            # vehicle_a_insurance group
+            "vehicle_a_insurer":    "Росгосстрах",
+            "vehicle_a_policy_number": "XXX000123456",
+            "vehicle_a_policy_expiry": "31.12.2025",
+            # vehicle_a_damage group
+            "vehicle_a_impact_point": "передний бампер",
+            "vehicle_a_damage":     "вмятина",
+            # vehicle_b_base group
+            "vehicle_b_make_model": "Kia Rio",
+            "vehicle_b_reg_number": "В456СМ777",
+            # vehicle_b_persons group
+            "vehicle_b_owner_name": "Петров П.П.",
+            "vehicle_b_driver_name": "Петров П.П.",
+            # vehicle_b_insurance group
+            "vehicle_b_insurer":    "СОГАЗ",
+            "vehicle_b_policy_number": "YYY111654321",
+            "vehicle_b_policy_expiry": "30.06.2025",
+            # vehicle_b_damage group
+            "vehicle_b_impact_point": "задний бампер",
+            "vehicle_b_damage":     "царапина",
+            # fault_circumstances group
+            "circumstances":        "А двигался прямо, Б поворачивал",
+            "vehicle_a_fault":      "не виноват",
+            "vehicle_b_fault":      "виноват",
+            # scheme group
+            "scheme":               "А у обочины, Б въехал сзади",
+            # signatures group
+            "signatures_confirmed": True,
         }
         resp = self._backend_call(
             query="всё верно, подтверждаем",

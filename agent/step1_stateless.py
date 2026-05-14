@@ -230,8 +230,6 @@ _FALLBACK_QUESTIONS: dict[str, list[str]] = {
     ],
 }
 
-_OVERRIDABLE_SLOTS = {"victims", "participants_count", "osago_both"}
-
 _SIMPLE_YES = frozenset({
     "да", "yes", "ага", "конечно", "верно", "точно", "именно",
     "угу", "ок", "ok", "хорошо", "само собой", "есть"
@@ -608,9 +606,7 @@ def process_step1_with_llm(
             accumulated_prefill[k] = v
 
     for k, v in result.items():
-        if v is None:
-            continue
-        if merged.get(k) is None or k in _OVERRIDABLE_SLOTS:
+        if v is not None:
             merged[k] = v
 
     # Проверка стоп-факторов
