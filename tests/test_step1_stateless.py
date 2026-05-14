@@ -393,7 +393,7 @@ class TestStep1WithLLM:
         )
         result = process_step1_with_llm(giga, "всё верно", [], full_slots)
         assert result.step_completed is True
-        assert str(result.next_step) in ("step2", "Step.STEP2")
+        assert result.next_step.value == "offer_europrotocol"
 
     def test_partial_slots_asks_question(self):
         from agent.step1_stateless import process_step1_with_llm

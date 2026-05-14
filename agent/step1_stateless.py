@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+import re
 
 from gigachat import GigaChat
 from gigachat.models import Chat, Messages, MessagesRole
@@ -64,7 +65,8 @@ _SLOT_EXTRACTION_PROMPT = """\
 
 Вопрос был про: victims (пострадавшие)
 Сообщение: "есть пострадавшие, один человек ранен"
-Ответ: {{"safety_confirmed": null, "emergency_sign": null, "victims": true, "participants_count": null, "osago_both": null, "disagreement": null}}
+Ответ: {{"safety_confirmed": null, "emergency_sign": null, "victims": null, "participants_count": null, "osago_both": null, "disagreement": null}}
+Пояснение: число на вопрос о пострадавших — неоднозначный ответ. Нужно уточнить: "Вы имеете в виду 2 пострадавших?" Не делай выводов самостоятельно.
 
 Вопрос был про: participants_count (количество ТС)
 Сообщение: "2"
@@ -153,7 +155,7 @@ _PREFILL_EXTRACTION_PROMPT = """\
 
 Сообщение пользователя: "{message}"
 """
-
+# Ответ: {{}} только так, иначе выдаёт ошибку
 
 def _try_prefill_fields(giga: GigaChat, message: str) -> dict:
     """
@@ -488,13 +490,68 @@ def _try_simple_extraction(message: str, current_slot: str) -> dict:
     text = message.strip().lower().rstrip("!.,?")
     bool_slots = {"safety_confirmed", "emergency_sign", "victims", "osago_both", "disagreement"}
 
-    if current_slot in bool_slots:
+    # Разбиваем сообщение на части (по запятым и союзам) для обработки нескольких фактов
+    parts = [p.strip() for p in re.split(r'[,;]| и | но | а ', text) if p.strip()]
+
+    result = {}
+
+    for part in parts:
+        # Маркеры для victims (пострадавшие)
+        victims_markers = ["пострадавш", "ранен", "травм", "жертв"]
+        if any(m in part for m in victims_markers):
+            if part in _SIMPLE_NO or part.startswith("нет ") or " нет" in part or "0" in part:
+                result["victims"] = False
+            else:
+                result["victims"] = True
+            continue
+
+        # Маркеры для osago_both (ОСАГО)
+        osago_markers = ["осаго", "полис", "страховк"]
+        if any(m in part for m in osago_markers):
+            if part in _SIMPLE_NO or part.startswith("нет "):
+                result["osago_both"] = False
+            elif part in _SIMPLE_YES or part.startswith("есть "):
+                result["osago_both"] = True
+            continue
+
+        # Маркеры для safety_confirmed (безопасность)
+        safety_markers = ["пожар", "взрыв", "угроз", "бензин", "топлив", "искр"]
+        if any(m in part for m in safety_markers):
+            if part in _SIMPLE_NO or part.startswith("нет "):
+                result["safety_confirmed"] = False
+            elif part in _SIMPLE_YES or part.startswith("есть "):
+                result["safety_confirmed"] = True
+            continue
+
+        # Маркеры для emergency_sign (аварийка/знак)
+        emergency_markers = ["аварийк", "знак", "фонарь", "мигал"]
+        if any(m in part for m in emergency_markers):
+            if part in _SIMPLE_NO or part.startswith("нет "):
+                result["emergency_sign"] = False
+            elif part in _SIMPLE_YES or part.startswith("есть "):
+                result["emergency_sign"] = True
+            # Обработка случая "знак выставил" без явного "да/нет"
+            elif "выставил" in part or "включил" in part or "поставил" in part:
+                result["emergency_sign"] = True
+            continue
+
+        # Маркеры для disagreement (разногласия/спор)
+        disagreement_markers = ["спор", "разноглас", "не соглас", "вина", "кто прав"]
+        if any(m in part for m in disagreement_markers):
+            if part in _SIMPLE_NO or part.startswith("нет "):
+                result["disagreement"] = False
+            elif part in _SIMPLE_YES or part.startswith("есть "):
+                result["disagreement"] = True
+            continue
+
+    # Если ничего не извлекли по маркерам, используем общий подход по текущему слоту
+    if not result and current_slot in bool_slots:
         if text in _SIMPLE_YES or text.startswith("есть "):
             return {current_slot: True}
         if text in _SIMPLE_NO or text.startswith("нет "):
             return {current_slot: False}
 
-    if current_slot == "participants_count":
+    if not result and current_slot == "participants_count":
         try:
             n = int(text)
             if 1 <= n <= 20:
@@ -504,7 +561,7 @@ def _try_simple_extraction(message: str, current_slot: str) -> dict:
         if text in _WORD_NUMS:
             return {current_slot: _WORD_NUMS[text]}
 
-    return {}
+    return result
 
 
 # ---------------------------------------------------------------------------

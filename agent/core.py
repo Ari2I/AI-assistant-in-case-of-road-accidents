@@ -68,10 +68,13 @@ def run_agent(
     feedback_db = feedback_db or get_feedback_db()
     disagreement_db = disagreement_db or get_disagreement_db()
 
-    # ШАГ 0: шаблоны — проверяем первыми, без вызова LLM
-    template_answer = match_template(query)
-    if template_answer:
-        return _ok(template_answer, "template", None)
+    # ШАГ 0: шаблоны — проверяем только если нет активного шага (current_step is None)
+    # или в режиме CONSULTANT_ONLY. Внутри активных шагов (STEP1, STEP2, STEP3, OFFER_EUROPROTOCOL)
+    # шаблоны не применяются, чтобы не прерывать процесс заполнения данных.
+    if current_step is None or current_step == Step.CONSULTANT_ONLY:
+        template_answer = match_template(query)
+        if template_answer:
+            return _ok(template_answer, "template", None)
 
     # ШАГ 1: маршрутизация по текущему шагу сценария
     return _route_by_step(

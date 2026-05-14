@@ -78,7 +78,7 @@ class TestStep1Isolated:
         }
         result = process_step1_with_llm(giga, "всё верно", [], all_slots)
         assert result.step_completed is True
-        assert result.next_step == Step.STEP2
+        assert result.next_step == Step.OFFER_EUROPROTOCOL
 
     def test_asks_question_when_incomplete(self):
         from agent.step1_stateless import process_step1_with_llm
@@ -151,14 +151,16 @@ class TestStep2Isolated:
     def test_completes_when_all_fields_filled(self):
         from agent.step2_europrotocol import process_step2_with_llm
         all_fields = {
-            "datetime":           "15.01.2024 14:30",
-            "location":           "г. Москва, ул. Ленина, д. 10",
-            "participant_a":      "Иванов И.И., полис XXX000",
-            "participant_b":      "Петров П.П., полис YYY111",
-            "circumstances":      "А двигался прямо, Б поворачивал",
-            "damage_description": "бампер — вмятина, крыло — царапина",
-            "scheme":             "А стоял у обочины, Б въехал сзади",
-            "signatures":         "оба подпишут",
+            "date":                 "15.01.2024",
+            "time":                 "14:30",
+            "location":             "г. Москва, ул. Ленина, д. 10",
+            "vehicle_a_make_model": "Toyota Camry",
+            "vehicle_a_reg_number": "А123БВ777",
+            "vehicle_b_make_model": "Kia Rio",
+            "vehicle_b_reg_number": "В456СМ777",
+            "circumstances":        "А двигался прямо, Б поворачивал",
+            "scheme":               "А стоял у обочины, Б въехал сзади",
+            "signatures_confirmed": True,
         }
         giga = _make_queue_giga(['{}'])
         result = process_step2_with_llm(
