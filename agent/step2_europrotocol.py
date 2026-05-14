@@ -58,7 +58,7 @@ _FIELDS_NEEDING_REFORMULATION: frozenset[str] = frozenset({
 
 _FIELD_DESCRIPTIONS_FOR_REFORMULATION: dict[str, str] = {
     "circumstances": "Обстоятельства ДТП (пункт 11 / оборотная сторона, пункт 15)",
-    "scheme":        "Описание схемы ДТП (пункт 12)",
+    "scheme": "Описание схемы ДТП (пункт 12)",
     "vehicle_a_damage": "Характер и перечень видимых повреждений ТС А (пункт 9)",
     "vehicle_b_damage": "Характер и перечень видимых повреждений ТС Б (пункт 9)",
 }
@@ -125,6 +125,10 @@ FIELDS_CONFIG: dict[str, dict] = {
         "prompt": "Данные автомобиля А: марка/модель и государственный номер.",
         "instruction": "Пример: Toyota Camry, госномер А123БВ777",
         "keys": ["vehicle_a_make_model", "vehicle_a_reg_number"],
+        "key_prompts": {
+            "vehicle_a_make_model": "Укажите марку и модель автомобиля А.\nПример: Toyota Camry",
+            "vehicle_a_reg_number": "Укажите государственный номер автомобиля А.\nПример: А123БВ777",
+        },
     },
     "vehicle_a_persons": {
         "prompt": (
@@ -147,11 +151,19 @@ FIELDS_CONFIG: dict[str, dict] = {
             "Повреждения: вмятина / царапина / трещина. Только видимые."
         ),
         "keys": ["vehicle_a_impact_point", "vehicle_a_damage"],
+        "key_prompts": {
+            "vehicle_a_impact_point": "Укажите место первоначального удара на авто А.\nПример: левое переднее крыло",
+            "vehicle_a_damage": "Перечислите видимые повреждения авто А.\nПример: левое переднее крыло — вмятина, бампер — царапина",
+        },
     },
     "vehicle_b_base": {
         "prompt": "Данные автомобиля Б: марка/модель и государственный номер.",
         "instruction": "Пример: Honda Civic, госномер В456ГД777",
         "keys": ["vehicle_b_make_model", "vehicle_b_reg_number"],
+        "key_prompts": {
+            "vehicle_b_make_model": "Укажите марку и модель автомобиля Б.\nПример: Honda Civic",
+            "vehicle_b_reg_number": "Укажите государственный номер автомобиля Б.\nПример: В456ГД777",
+        },
     },
     "vehicle_b_persons": {
         "prompt": (
@@ -171,6 +183,10 @@ FIELDS_CONFIG: dict[str, dict] = {
         "prompt": "Место первоначального удара на авто Б и перечень видимых повреждений.",
         "instruction": "Место удара — деталь. Повреждения: вмятина / царапина / трещина.",
         "keys": ["vehicle_b_impact_point", "vehicle_b_damage"],
+        "key_prompts": {
+            "vehicle_b_impact_point": "Укажите место первоначального удара на авто Б.\nПример: задний бампер",
+            "vehicle_b_damage": "Перечислите видимые повреждения авто Б.\nПример: задний бампер — трещина",
+        },
     },
     "fault_circumstances": {
         "prompt": (
@@ -284,12 +300,12 @@ class StopFactor:
 
 class EuroprotocolCheckResult:
     def __init__(
-        self,
-        is_possible: bool | str,
-        stop_factors: list,
-        recommendation: str,
-        next_step: str,
-        limits: dict,
+            self,
+            is_possible: bool | str,
+            stop_factors: list,
+            recommendation: str,
+            next_step: str,
+            limits: dict,
     ):
         self.is_possible = is_possible
         self.stop_factors = stop_factors
@@ -445,26 +461,29 @@ def _reformulate_field(giga: GigaChat, field: str, original_text: str) -> str:
         )
         response = giga.chat(payload)
         result = response.choices[0].message.content.strip().strip('"').strip("'")
-        return result if result else original_text
+        if not result or len(result) < 10:
+            return original_text
+        return result
     except Exception as e:
         print(f"[step2] reformulation error for '{field}': {e}")
         return original_text
 
 
 def _build_pending_proposal(
-    giga: GigaChat,
-    field: str,
-    original: str,
-    remaining: dict[str, str],
-) -> tuple[dict, str]:
+        giga: GigaChat,
+        field: str,
+        original: str,
+        remaining: dict[str, str],
+) -> tuple[dict, str] | None:
     """
-    Реформулирует первое поле из очереди и формирует структуру pending + текст ответа.
-
-    Returns:
-        pending_state: dict для сохранения в collected_fields[_PENDING_KEY]
-        answer_text: текст для пользователя
+    Возвращает None если реформулировка совпала с оригиналом или не удалась —
+    в этом случае поле нужно сохранить напрямую без диалога с пользователем.
     """
     reformulated = _reformulate_field(giga, field, original)
+
+    if reformulated == original:
+        return None
+
     field_desc = _FIELD_DESCRIPTIONS_FOR_REFORMULATION.get(field, field)
 
     pending_state = {
@@ -486,10 +505,10 @@ def _build_pending_proposal(
 
 
 def _handle_reformulation_response(
-    giga: GigaChat,
-    query: str,
-    collected_fields: dict,
-    pending: dict,
+        giga: GigaChat,
+        query: str,
+        collected_fields: dict,
+        pending: dict,
 ) -> StepResponse:
     """
     Обрабатывает ответ пользователя на предложение реформулировки.
@@ -524,20 +543,29 @@ def _handle_reformulation_response(
     # Есть ещё поля в очереди на реформулировку?
     remaining: dict[str, str] = pending.get("remaining", {})
     if remaining:
-        next_field, next_original = next(iter(remaining.items()))
-        next_remaining = {k: v for k, v in remaining.items() if k != next_field}
-        next_pending, next_answer = _build_pending_proposal(
-            giga, next_field, next_original, next_remaining
-        )
-        collected_fields[_PENDING_KEY] = next_pending
+        remaining_items = list(remaining.items())
+        while remaining_items:
+            next_field, next_original = remaining_items.pop(0)
+            next_remaining = dict(remaining_items)
 
-        prefix = "Записано." + save_note + "\n\n"
-        return StepResponse(
-            answer=prefix + next_answer,
-            step_completed=False,
-            next_step=Step.STEP2,
-            collected_fields=collected_fields,
-        )
+            proposal = _build_pending_proposal(
+                giga, next_field, next_original, next_remaining
+            )
+
+            if proposal is None:
+                collected_fields[next_field] = next_original
+                continue
+
+            next_pending, next_answer = proposal
+            collected_fields[_PENDING_KEY] = next_pending
+
+            prefix = "Записано." + save_note + "\n\n"
+            return StepResponse(
+                answer=prefix + next_answer,
+                step_completed=False,
+                next_step=Step.STEP2,
+                collected_fields=collected_fields,
+            )
 
     # Все реформулировки обработаны — переходим к следующей группе
     if save_note:
@@ -549,14 +577,9 @@ def _handle_reformulation_response(
 
 
 def _continue_after_save(collected_fields: dict, prefix: str = "") -> StepResponse:
-    """
-    Определяет следующее действие после сохранения полей:
-    либо задаёт следующий вопрос, либо формирует final_json.
-    """
     current_group = _get_current_group(collected_fields)
 
     if current_group is None:
-        # Все группы закрыты
         final_json = {
             "type": "europrotocol",
             "status": "ready_for_pdf",
@@ -575,8 +598,20 @@ def _continue_after_save(collected_fields: dict, prefix: str = "") -> StepRespon
         )
 
     config = FIELDS_CONFIG[current_group]
+
+    # Ищем первый незаполненный обязательный ключ текущей группы
+    required = config.get("required_keys", config["keys"])
+    missing_key = next((k for k in required if not collected_fields.get(k)), None)
+
+    # Если есть целевой вопрос для этого конкретного ключа — используем его
+    key_prompts = config.get("key_prompts", {})
+    if missing_key and missing_key in key_prompts:
+        question = key_prompts[missing_key]
+    else:
+        question = f"{config['instruction']}\n\n{config['prompt']}"
+
     return StepResponse(
-        answer=prefix + f"{config['instruction']}\n\n{config['prompt']}",
+        answer=prefix + question,
         step_completed=False,
         next_step=Step.STEP2,
         collected_fields=collected_fields,
@@ -601,10 +636,10 @@ def _get_current_group(collected: dict) -> str | None:
 
 
 def _extract_fields_llm(
-    giga: GigaChat,
-    message: str,
-    existing: dict,
-    current_group: str = "",
+        giga: GigaChat,
+        message: str,
+        existing: dict,
+        current_group: str = "",
 ) -> dict:
     """
     Вызывает LLM для извлечения плоских ключей из сообщения пользователя.
@@ -631,6 +666,9 @@ def _extract_fields_llm(
         current_keys=current_keys or "—",
         message=message,
     )
+
+    had_any_success = False
+    last_exception: Exception | None = None
 
     for attempt in range(2):
         try:
@@ -659,13 +697,17 @@ def _extract_fields_llm(
 
             extracted = json.loads(content)
             result = {k: v for k, v in extracted.items() if v is not None}
+            had_any_success = True  # хотя бы распарсили — значит не сетевая ошибка
             if result:
                 return result
 
-        except json.JSONDecodeError as e:
-            print(f"[step2] JSON parse error (attempt {attempt + 1}): {e}")
         except Exception as e:
             print(f"[step2] field extraction error (attempt {attempt + 1}): {e}")
+            last_exception = e
+
+    # Обе попытки упали с исключением — пробрасываем наружу
+    if not had_any_success and last_exception:
+        raise last_exception
 
     return {}
 
@@ -711,40 +753,40 @@ def _build_final_data(fields: dict) -> dict:
     """
     return {
         "accident": {
-            "date":      fields.get("date"),
-            "time":      fields.get("time"),
-            "location":  fields.get("location"),
+            "date": fields.get("date"),
+            "time": fields.get("time"),
+            "location": fields.get("location"),
             "witnesses": fields.get("witnesses"),
         },
         "vehicle_a": {
-            "make_model":     fields.get("vehicle_a_make_model"),
-            "reg_number":     fields.get("vehicle_a_reg_number"),
-            "owner_name":     fields.get("vehicle_a_owner_name"),
-            "driver_name":    fields.get("vehicle_a_driver_name"),
+            "make_model": fields.get("vehicle_a_make_model"),
+            "reg_number": fields.get("vehicle_a_reg_number"),
+            "owner_name": fields.get("vehicle_a_owner_name"),
+            "driver_name": fields.get("vehicle_a_driver_name"),
             "driver_license": fields.get("vehicle_a_driver_license"),
-            "insurer":        fields.get("vehicle_a_insurer"),
-            "policy_number":  fields.get("vehicle_a_policy_number"),
-            "policy_expiry":  fields.get("vehicle_a_policy_expiry"),
-            "impact_point":   fields.get("vehicle_a_impact_point"),
-            "damage":         fields.get("vehicle_a_damage"),
-            "fault":          fields.get("vehicle_a_fault"),
+            "insurer": fields.get("vehicle_a_insurer"),
+            "policy_number": fields.get("vehicle_a_policy_number"),
+            "policy_expiry": fields.get("vehicle_a_policy_expiry"),
+            "impact_point": fields.get("vehicle_a_impact_point"),
+            "damage": fields.get("vehicle_a_damage"),
+            "fault": fields.get("vehicle_a_fault"),
         },
         "vehicle_b": {
-            "make_model":     fields.get("vehicle_b_make_model"),
-            "reg_number":     fields.get("vehicle_b_reg_number"),
-            "owner_name":     fields.get("vehicle_b_owner_name"),
-            "driver_name":    fields.get("vehicle_b_driver_name"),
+            "make_model": fields.get("vehicle_b_make_model"),
+            "reg_number": fields.get("vehicle_b_reg_number"),
+            "owner_name": fields.get("vehicle_b_owner_name"),
+            "driver_name": fields.get("vehicle_b_driver_name"),
             "driver_license": fields.get("vehicle_b_driver_license"),
-            "insurer":        fields.get("vehicle_b_insurer"),
-            "policy_number":  fields.get("vehicle_b_policy_number"),
-            "policy_expiry":  fields.get("vehicle_b_policy_expiry"),
-            "impact_point":   fields.get("vehicle_b_impact_point"),
-            "damage":         fields.get("vehicle_b_damage"),
-            "fault":          fields.get("vehicle_b_fault"),
+            "insurer": fields.get("vehicle_b_insurer"),
+            "policy_number": fields.get("vehicle_b_policy_number"),
+            "policy_expiry": fields.get("vehicle_b_policy_expiry"),
+            "impact_point": fields.get("vehicle_b_impact_point"),
+            "damage": fields.get("vehicle_b_damage"),
+            "fault": fields.get("vehicle_b_fault"),
         },
-        "circumstances":        fields.get("circumstances"),
-        "scheme":               fields.get("scheme"),
-        "has_disagreement":     fields.get("has_disagreement", False),
+        "circumstances": fields.get("circumstances"),
+        "scheme": fields.get("scheme"),
+        "has_disagreement": fields.get("has_disagreement", False),
         "signatures_confirmed": fields.get("signatures_confirmed"),
     }
 
@@ -754,11 +796,11 @@ def _build_final_data(fields: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def process_step2_with_llm(
-    giga: GigaChat,
-    query: str,
-    history: list,
-    slots: dict,
-    collected_fields: dict,
+        giga: GigaChat,
+        query: str,
+        history: list,
+        slots: dict,
+        collected_fields: dict,
 ) -> StepResponse:
     """
     Обрабатывает один шаг заполнения Европротокола.
@@ -787,23 +829,42 @@ def process_step2_with_llm(
     current_group = _get_current_group(collected_fields)
 
     # ШАГ 3: извлечение данных из сообщения пользователя
+    had_error = False
     try:
         new_data = _extract_fields_llm(giga, query, collected_fields, current_group or "")
     except Exception as e:
         print(f"[step2] extraction error: {e}")
         new_data = {}
+        had_error = True
 
     if not new_data:
-        # Ничего не извлекли — просто повторяем вопрос текущей группы
         if current_group is None:
             return _continue_after_save(collected_fields)
-        config = FIELDS_CONFIG[current_group]
-        return StepResponse(
-            answer=f"{config['instruction']}\n\n{config['prompt']}",
-            step_completed=False,
-            next_step=Step.STEP2,
-            collected_fields=collected_fields,
-        )
+
+        if had_error:
+            # Сетевая или парсинговая ошибка — просим повторить с примером
+            config = FIELDS_CONFIG[current_group]
+            required = config.get("required_keys", config["keys"])
+            missing_key = next((k for k in required if not collected_fields.get(k)), None)
+            key_prompts = config.get("key_prompts", {})
+
+            if missing_key and missing_key in key_prompts:
+                example = key_prompts[missing_key]
+            else:
+                example = config["instruction"]
+
+            return StepResponse(
+                answer=(
+                    f"Не удалось обработать ваше сообщение — попробуйте ещё раз.\n\n"
+                    f"{example}"
+                ),
+                step_completed=False,
+                next_step=Step.STEP2,
+                collected_fields=collected_fields,
+            )
+
+        # Ошибки не было, но данных нет — пользователь написал не по теме
+        return _continue_after_save(collected_fields)
 
     # ШАГ 4: разделяем поля на «сохранить сразу» и «требуют реформулировки»
     to_save_directly: dict[str, object] = {}
@@ -825,20 +886,29 @@ def process_step2_with_llm(
 
     # ШАГ 5: если есть текстовые поля — запускаем цикл реформулировки
     if to_reformulate:
-        first_field, first_original = next(iter(to_reformulate.items()))
-        remaining = {k: v for k, v in to_reformulate.items() if k != first_field}
+        # Проходим по очереди пока не найдём поле, которое реально изменилось
+        remaining_items = list(to_reformulate.items())
+        while remaining_items:
+            first_field, first_original = remaining_items.pop(0)
+            remaining = dict(remaining_items)
 
-        pending_state, answer_text = _build_pending_proposal(
-            giga, first_field, first_original, remaining
-        )
-        collected_fields[_PENDING_KEY] = pending_state
+            proposal = _build_pending_proposal(
+                giga, first_field, first_original, remaining
+            )
 
-        return StepResponse(
-            answer=answer_text,
-            step_completed=False,
-            next_step=Step.STEP2,
-            collected_fields=collected_fields,
-        )
+            if proposal is None:
+                # Реформулировка не дала результата — сохраняем оригинал напрямую
+                collected_fields[first_field] = first_original
+                continue
 
+            pending_state, answer_text = proposal
+            collected_fields[_PENDING_KEY] = pending_state
+
+            return StepResponse(
+                answer=answer_text,
+                step_completed=False,
+                next_step=Step.STEP2,
+                collected_fields=collected_fields,
+            )
     # ШАГ 6: только структурные поля → продолжаем сбор
     return _continue_after_save(collected_fields)

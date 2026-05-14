@@ -424,7 +424,7 @@ def _extract_slots_llm(
         return {k: v for k, v in extracted.items() if v is not None}
     except Exception as e:
         print(f"[step1] slot extraction error: {e}")
-        return {}
+        raise
 
 
 def _ask_question(slot: str, history: list) -> str:
@@ -588,14 +588,15 @@ def process_step1_with_llm(
     )
 
     # Сначала детерминированное извлечение (быстро, без токенов)
-    result = _try_simple_extraction(query, next_slot_before or "")
-
-    if not result:
-        # Если простое не сработало — LLM
+    had_error = False
+    try:
         result = _extract_slots_llm(
             giga, query, merged, history,
             current_slot=next_slot_before or "",
         )
+    except Exception:
+        result = {}
+        had_error = True
 
     print(f"[step1] slot={next_slot_before}, extracted={result}")
 
@@ -647,6 +648,17 @@ def process_step1_with_llm(
             ),
             step_completed=True,
             next_step=Step.OFFER_EUROPROTOCOL,
+            slots=merged,
+            prefilled_fields=accumulated_prefill,
+        )
+
+    if had_error:
+        return StepResponse(
+            answer=(
+                "Не удалось обработать ваше сообщение — попробуйте написать ещё раз."
+            ),
+            step_completed=False,
+            next_step=Step.STEP1,
             slots=merged,
             prefilled_fields=accumulated_prefill,
         )
