@@ -14,6 +14,8 @@ class Step(str, Enum):
     STEP2               = "step2"
     STEP3               = "step3"
     OFFER_EUROPROTOCOL  = "offer_europrotocol"
+    OFFER_METHOD        = "offer_method"       # выбор способа заполнения протокола
+    FILL_EXTERNAL       = "fill_external"      # пользователь заполняет сам (приложение/бумага)
     CONSULTANT_ONLY     = "consultant_only"
     DONE                = "done"
     CALL_GIBDD          = "call_gibdd"

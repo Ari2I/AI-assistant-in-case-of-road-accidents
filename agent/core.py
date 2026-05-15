@@ -1,12 +1,11 @@
 """
-Pipeline v4.2 — удаление general режима.
+Pipeline v4.4
 
-Изменения vs v4.1:
-  - Удалён Step.GENERAL — агент работает только по шагам (step1, step2, step3)
-  - Агент одновременно является консультантом по вопросам ДТП и ПДД на каждом шаге
-  - Функция _try_handle_as_general_question удалена — общие вопросы обрабатываются
-    в контексте текущего шага через meta_classifier и RAG
-  - current_step=None больше не вызывает _run_general_consultant — это ошибка состояния
+Изменения vs v4.3:
+  - OFFER_EUROPROTOCOL объединён с выбором метода: лимиты + 3 варианта в одном экране
+  - OFFER_METHOD убран как пользовательский экран (маппится в OFFER_EUROPROTOCOL)
+  - При выборе внешнего метода entry_message возвращается сразу, answer=None невозможен
+  - Исправлен баг: process_step3 получает collected_fields, а не final_json
 """
 
 from gigachat import GigaChat
@@ -27,7 +26,11 @@ from agent.step2_europrotocol import process_step2_with_llm, process_step2_check
 from agent.step1_stateless import process_step1_with_llm
 from agent.disagreement_helper import run_disagreement_help
 from agent.step3_insurance import process_step3
-
+from agent.fill_external import (
+    process_fill_external,
+    _ENTRY_MESSAGE_APP,
+    _ENTRY_MESSAGE_PAPER,
+)
 
 _CONFIDENCE_THRESHOLD = 0.65
 _MAX_IMPROVE_ATTEMPTS = 2
@@ -37,8 +40,27 @@ _UNCERTAINTY_MARKERS = [
     "затрудняюсь", "не могу сказать", "уточните", "не помню",
 ]
 
-# Алгоритм загружается один раз при старте модуля
 _ALGORITHM = load_algorithm()
+
+# ---------------------------------------------------------------------------
+# Ключевые слова выбора метода (используются в OFFER_EUROPROTOCOL)
+# ---------------------------------------------------------------------------
+
+_KW_OUR_APP: frozenset[str] = frozenset({
+    "1", "наше", "ваше", "здесь", "тут",
+    "через вас", "в этом приложении", "через это",
+})
+_KW_EXT_APP: frozenset[str] = frozenset({
+    "2", "другое", "госуслуги", "помощник осаго",
+    "помощник", "госуслуги авто", "другое приложение",
+})
+_KW_PAPER: frozenset[str] = frozenset({
+    "3", "бумаг", "бланк", "на бумаге", "бумажный",
+})
+_KW_REFUSE: frozenset[str] = frozenset({
+    "нет", "не хочу", "не буду", "откажусь",
+    "гибдд", "no", "вызову гибдд", "отказываюсь",
+})
 
 
 # ---------------------------------------------------------------------------
@@ -55,28 +77,16 @@ def run_agent(
     feedback_db=None,
     disagreement_db=None,
 ) -> dict:
-    """
-    Основная точка входа агента.
-
-    Django передаёт инициализированные базы через параметры db/feedback_db/disagreement_db.
-    При локальном запуске (None) используется db_manager как fallback.
-    """
     history = history or []
-
-    # Fallback к db_manager, если Django не передал базы
     db = db or get_main_db()
     feedback_db = feedback_db or get_feedback_db()
     disagreement_db = disagreement_db or get_disagreement_db()
 
-    # ШАГ 0: шаблоны — проверяем только если нет активного шага (current_step is None)
-    # или в режиме CONSULTANT_ONLY. Внутри активных шагов (STEP1, STEP2, STEP3, OFFER_EUROPROTOCOL)
-    # шаблоны не применяются, чтобы не прерывать процесс заполнения данных.
     if current_step is None or current_step == Step.CONSULTANT_ONLY:
         template_answer = match_template(query)
         if template_answer:
             return _ok(template_answer, "template", None)
 
-    # ШАГ 1: маршрутизация по текущему шагу сценария
     return _route_by_step(
         query=query,
         current_step=current_step,
@@ -95,24 +105,12 @@ def rate_answer(
     rating: int,
     feedback_db=None,
 ) -> dict:
-    """
-    Запускает AI-критика. При высоких оценках сохраняет Q&A в базу дообучения.
-
-    Args:
-        query:       вопрос пользователя (из БД бэкенда)
-        answer:      ответ агента (из БД бэкенда)
-        rating:      оценка пользователя 0–5
-        feedback_db: база дообучения (опционально, используется менеджер как fallback)
-    """
     try:
         with _make_giga() as giga:
             score, comment = critic_rate_answer(giga, query, answer)
-
         if rating >= 4 and score >= 4:
             save_good_qa(query, answer)
-
         return {"critic_score": score, "critic_comment": comment}
-
     except Exception as e:
         print(f"[core] rate_answer error: {e}")
         return {"critic_score": 3, "critic_comment": "Ошибка оценки"}
@@ -132,9 +130,7 @@ def _route_by_step(
     feedback_db,
     disagreement_db,
 ) -> dict:
-    """Направляет запрос к нужному обработчику в зависимости от current_step."""
 
-    # --- STEP 1: сбор фактов ---
     if current_step == Step.STEP1:
         if slots.get("disagreement_help_active"):
             return _handle_with_error_guard(
@@ -144,7 +140,6 @@ def _route_by_step(
                 ),
                 "disagreement_help",
             )
-
         return _handle_with_error_guard(
             lambda giga: _step_response_to_dict(
                 process_step1_with_llm(giga, query, history, slots),
@@ -153,9 +148,11 @@ def _route_by_step(
             "step1",
         )
 
-    # --- STEP 2: заполнение Европротокола ---
-    if current_step == Step.STEP2:
+    # OFFER_METHOD маппится в тот же обработчик — один экран для пользователя
+    if current_step in (Step.OFFER_EUROPROTOCOL, Step.OFFER_METHOD):
+        return _run_offer_europrotocol(query, history, slots)
 
+    if current_step == Step.STEP2:
         return _handle_with_error_guard(
             lambda giga: _step_response_to_dict(
                 process_step2_with_llm(giga, query, history, slots, collected_fields),
@@ -164,80 +161,54 @@ def _route_by_step(
             "step2",
         )
 
-    # --- Предложение заполнить Европротокол ---
-    if current_step == Step.OFFER_EUROPROTOCOL:
-        return _run_offer_europrotocol(query, history, slots)
+    if current_step == Step.FILL_EXTERNAL:
+        return _handle_with_error_guard(
+            lambda giga: _step_response_to_dict(
+                process_fill_external(
+                    giga, query, history, slots, collected_fields, db, feedback_db
+                ),
+                "fill_external",
+            ),
+            "fill_external",
+        )
 
-    # --- STEP 3: помощь со страховой ---
     if current_step == Step.STEP3:
         return _handle_with_error_guard(
             lambda giga: _step_response_to_dict(
+                # Исправлен баг: передаём collected_fields, не final_json
                 process_step3(giga, query, history, collected_fields, db, feedback_db),
                 "step3",
             ),
             "step3",
         )
 
-    # --- Режим консультанта (пользователь отказался от Европротокола) ---
     if current_step == Step.CONSULTANT_ONLY:
         return _run_consultant(query, history, db, feedback_db)
 
-    # --- current_step is None или неизвестное значение ---
-    # Ошибка состояния: должен быть установлен один из шагов или CONSULTANT_ONLY
     print(f"[core] WARNING: unknown current_step={current_step!r}, treating as consultant")
     return _run_consultant(query, history, db, feedback_db)
 
 
 # ---------------------------------------------------------------------------
-# Обработчики шагов
+# OFFER_EUROPROTOCOL — лимиты + выбор метода в одном экране
 # ---------------------------------------------------------------------------
 
 def _run_offer_europrotocol(query: str, history: list, slots: dict) -> dict:
+    """
+    Единый экран предложения Европротокола.
+
+    Первый вход: показывает лимиты + три варианта.
+    Последующие: распознаёт выбор и маршрутизирует напрямую в нужный шаг.
+    answer=None никогда не возвращается.
+    """
     q = query.strip().lower()
-    AGREE  = {"да", "хочу", "давайте", "готов", "заполним", "ок", "ok", "yes"}
-    REFUSE = {"нет", "не хочу", "не буду", "откажусь", "гибдд", "no"}
 
-    if any(kw in q for kw in AGREE):
-        # Запускаем проверку Европротокола с учётом наличия приложения
-        # has_app=True по умолчанию — если пользователь не указал иное,
-        # считаем что приложение доступно (он может использовать «Помощник ОСАГО»)
-        check_result = process_step2_check(slots, has_app=True)
-
-        # Формируем ответ с конкретным лимитом выплаты
-        limits = check_result.limits
-        if limits:
-            base_limit = limits.get("base", 0)
-            if base_limit >= 400_000:
-                limit_text = "400 000 руб."
-            elif base_limit >= 200_000:
-                limit_text = "200 000 руб."
-            else:
-                limit_text = "100 000 руб."
-        else:
-            limit_text = "100 000 руб."
-
-        prefilled = slots.get("_prefilled", {})
-        slots_clean = {k: v for k, v in slots.items() if k != "_prefilled"}
+    # --- Отказ ---
+    if any(kw in q for kw in _KW_REFUSE):
         return {
             "answer": (
-                f"Отлично, начинаем заполнение Европротокола. "
-                f"Ваш максимальный лимит выплаты — {limit_text}. "
-                f"{check_result.recommendation}"
-            ),
-            "source": "offer",
-            "category": None,
-            "step_completed": True,
-            "next_step": Step.STEP2,
-            "slots": slots_clean,
-            "collected_fields": prefilled,
-            "final_json": None,
-        }
-
-    if any(kw in q for kw in REFUSE):
-        return {
-            "answer": (
-                "Понял. Для оформления ДТП вам необходимо вызвать ГИБДД (102). "
-                "Я продолжу отвечать на ваши вопросы в режиме консультанта."
+                "Понял. Для оформления ДТП вызовите ГИБДД (102). "
+                "Продолжаю работать в режиме консультанта."
             ),
             "source": "offer",
             "category": None,
@@ -248,24 +219,82 @@ def _run_offer_europrotocol(query: str, history: list, slots: dict) -> dict:
             "final_json": None,
         }
 
-    # Первое обращение к OFFER_EUROPROTOCOL — показываем предложение с лимитом
-    # Вычисляем лимит заранее, чтобы пользователь знал условия
+    # --- Наше приложение ---
+    if any(kw in q for kw in _KW_OUR_APP):
+        prefilled = slots.get("_prefilled", {})
+        slots_clean = {k: v for k, v in slots.items() if k != "_prefilled"}
+        check_result = process_step2_check(slots_clean, has_app=True)
+        return {
+            "answer": (
+                f"Отлично, начинаем заполнение. {check_result.recommendation}\n\n"
+                "Укажите дату и точное время ДТП.\n"
+                "Формат: ДД.ММ.ГГГГ ЧЧ:ММ — например, 15.01.2025 14:30"
+            ),
+            "source": "offer",
+            "category": None,
+            "step_completed": True,
+            "next_step": Step.STEP2,
+            "slots": slots_clean,
+            "collected_fields": prefilled,
+            "final_json": None,
+        }
+
+    # --- Стороннее приложение ---
+    if any(kw in q for kw in _KW_EXT_APP):
+        updated_slots = {**slots, "fill_method": "app_external"}
+        return {
+            "answer": _ENTRY_MESSAGE_APP,
+            "source": "offer",
+            "category": None,
+            "step_completed": True,
+            "next_step": Step.FILL_EXTERNAL,
+            "slots": updated_slots,
+            "collected_fields": slots.get("_prefilled", {}),
+            "final_json": None,
+        }
+
+    # --- Бумажный бланк ---
+    if any(kw in q for kw in _KW_PAPER):
+        updated_slots = {**slots, "fill_method": "paper"}
+        return {
+            "answer": _ENTRY_MESSAGE_PAPER,
+            "source": "offer",
+            "category": None,
+            "step_completed": True,
+            "next_step": Step.FILL_EXTERNAL,
+            "slots": updated_slots,
+            "collected_fields": slots.get("_prefilled", {}),
+            "final_json": None,
+        }
+
+    # --- Первый вход или нераспознанный ввод ---
     check_result = process_step2_check(slots, has_app=True)
-    limits = check_result.limits
-    if limits:
-        base_limit = limits.get("base", 0)
-        if base_limit >= 400_000:
-            limit_text = "400 000 руб."
-        elif base_limit >= 200_000:
-            limit_text = "200 000 руб."
-        else:
-            limit_text = "100 000 руб."
+    base = check_result.limits.get("base", 100_000)
+
+    if base >= 400_000:
+        limit_block = (
+            "💰 Максимальная выплата:\n"
+            "— **400 000 руб.** — с фиксацией через приложение\n"
+            "— **100 000 руб.** — без приложения"
+        )
+    elif base >= 200_000:
+        limit_block = (
+            "💰 Максимальная выплата:\n"
+            "— **200 000 руб.** — с фиксацией через приложение (есть разногласия)\n"
+            "— Без приложения при разногласиях — Европротокол невозможен"
+        )
     else:
-        limit_text = "100 000 руб."
+        limit_block = "💰 Максимальная выплата: **100 000 руб.**"
+
     return {
         "answer": (
-            f"Вы можете оформить Европротокол. Максимальная выплата — до {limit_text}. "
-            f"Хотите заполнить его сейчас или предпочтёте вызвать ГИБДД?"
+            f"Вы можете оформить Европротокол — без вызова ГИБДД.\n\n"
+            f"{limit_block}\n\n"
+            "Как хотите заполнить протокол?\n\n"
+            "**1** — через наше приложение (я помогу заполнить каждое поле)\n"
+            "**2** — через другое приложение (Госуслуги.Авто, Помощник ОСАГО)\n"
+            "**3** — на бумажном бланке\n\n"
+            "Чтобы вызвать ГИБДД — напишите «нет» или «ГИБДД»."
         ),
         "source": "offer",
         "category": None,
@@ -277,18 +306,11 @@ def _run_offer_europrotocol(query: str, history: list, slots: dict) -> dict:
     }
 
 
-def _run_consultant(
-    query: str,
-    history: list,
-    db,
-    feedback_db,
-) -> dict:
-    """
-    Режим консультанта по вопросам ДТП и ПДД.
-    Используется при CONSULTANT_ONLY и как fallback для неизвестных current_step.
+# ---------------------------------------------------------------------------
+# Консультант
+# ---------------------------------------------------------------------------
 
-    Агент классифицирует вопрос через meta_classifier и отвечает на основе RAG-контекста.
-    """
+def _run_consultant(query: str, history: list, db, feedback_db) -> dict:
     try:
         with _make_giga() as giga:
             classifier_history = build_history(history, component="classifier")
@@ -305,16 +327,11 @@ def _run_consultant(
             answer, _ = _generate_with_selfcheck(
                 giga, query, context, plan, algorithm_slice, generator_history
             )
-
         return _ok(answer, "llm", category)
-
     except Exception as e:
         print(f"[core] consultant error: {e}")
-        return _ok(
-            "Произошла ошибка. Если нужна срочная помощь — звоните 112.",
-            "error",
-            None,
-        )
+        return _ok("Произошла ошибка. Если нужна срочная помощь — звоните 112.", "error", None)
+
 
 # ---------------------------------------------------------------------------
 # Генерация с самопроверкой
@@ -333,23 +350,17 @@ def _generate_with_selfcheck(
         algorithm=algorithm_slice,
         history_text=generator_history,
     )
-
     if not _should_run_selfcheck(raw):
         return raw, 1.0
-
     for attempt in range(_MAX_IMPROVE_ATTEMPTS):
         verdict, conf, issues, improved = improve_answer(giga, query, raw, context)
-
         if verdict == "GOOD":
             return raw, conf
-
         raw = improved
         if issues:
             print(f"[core] self-check attempt {attempt + 1}: {issues[:80]}")
-
         if conf >= _CONFIDENCE_THRESHOLD:
             break
-
     return raw, 0.0
 
 
@@ -365,26 +376,11 @@ def _make_giga() -> GigaChat:
     )
 
 
-def _looks_like_step_answer(query: str) -> bool:
-    """Короткий ответ в контексте шага — скорее всего ответ, а не самостоятельный вопрос."""
-    q = query.strip().lower().rstrip("!.,")
-    if len(q.split()) <= 3:
-        return True
-    starts = ("да ", "нет ", "ага ", "нету ", "есть ", "нет,", "да,")
-    return any(q.startswith(s) for s in starts)
-
-
 def _should_run_selfcheck(answer: str) -> bool:
-    """Запускаем self_check только при явных маркерах неуверенности."""
-    answer_lower = answer.lower()
-    return any(marker in answer_lower for marker in _UNCERTAINTY_MARKERS)
+    return any(marker in answer.lower() for marker in _UNCERTAINTY_MARKERS)
 
 
 def _handle_with_error_guard(handler, step_name: str) -> dict:
-    """
-    Вызывает handler(giga) в контексте GigaChat.
-    При любой ошибке возвращает безопасный ответ.
-    """
     try:
         with _make_giga() as giga:
             return handler(giga)
@@ -407,13 +403,9 @@ def _ok(answer: str, source: str, category: str | None) -> dict:
 
 
 def _step_response_to_dict(result: StepResponse, source: str) -> dict:
-    """Преобразует StepResponse в dict для возврата бэкенду."""
-    # Накопленный prefill сохраняем внутри slots под служебным ключом,
-    # чтобы Django передал его обратно при следующем запросе в step1.
     slots_out = dict(result.slots or {})
     if result.prefilled_fields:
         slots_out["_prefilled"] = result.prefilled_fields
-
     return {
         "answer": result.answer,
         "source": source,
@@ -427,7 +419,6 @@ def _step_response_to_dict(result: StepResponse, source: str) -> dict:
 
 
 def _step_error_response() -> dict:
-    """Безопасный ответ при ошибке шагового режима."""
     return {
         "answer": (
             "Произошла техническая ошибка. "
