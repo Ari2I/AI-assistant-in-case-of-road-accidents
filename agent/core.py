@@ -1,14 +1,16 @@
 """
-Pipeline v4.4
+Pipeline v4.5
 
-Изменения vs v4.3:
-  - OFFER_EUROPROTOCOL объединён с выбором метода: лимиты + 3 варианта в одном экране
-  - OFFER_METHOD убран как пользовательский экран (маппится в OFFER_EUROPROTOCOL)
-  - При выборе внешнего метода entry_message возвращается сразу, answer=None невозможен
-  - Исправлен баг: process_step3 получает collected_fields, а не final_json
+Изменения vs v4.4:
+  - RAG для вопросов пользователя в step1 и step2:
+    детерминированная детекция вопроса → отдельный LLM-вызов с RAG-контекстом →
+    ответ добавляется перед вопросом агента
+  - step1 использует категорию "general_questions" (широкий охват)
+  - step2 использует категорию "filling_europrotocol"
 """
 
 from gigachat import GigaChat
+from gigachat.models import Chat, Messages, MessagesRole
 
 from config import GIGA_AUTH
 from agent.meta_classifier import meta_classify
@@ -42,10 +44,6 @@ _UNCERTAINTY_MARKERS = [
 
 _ALGORITHM = load_algorithm()
 
-# ---------------------------------------------------------------------------
-# Ключевые слова выбора метода (используются в OFFER_EUROPROTOCOL)
-# ---------------------------------------------------------------------------
-
 _KW_OUR_APP: frozenset[str] = frozenset({
     "1", "наше", "ваше", "здесь", "тут",
     "через вас", "в этом приложении", "через это",
@@ -61,6 +59,91 @@ _KW_REFUSE: frozenset[str] = frozenset({
     "нет", "не хочу", "не буду", "откажусь",
     "гибдд", "no", "вызову гибдд", "отказываюсь",
 })
+
+# ---------------------------------------------------------------------------
+# RAG для вопросов в step1/step2
+# ---------------------------------------------------------------------------
+
+_QUESTION_STARTS: tuple[str, ...] = (
+    "что ", "как ", "когда ", "зачем ", "почему ", "можно ",
+    "нужно ", "обязательно ", "куда ", "где ", "кто ", "чем ",
+    "должен ", "должна ", "надо ", "стоит ", "следует ",
+    "расскажи", "объясни", "поясни", "сколько ",
+)
+
+_STEP_QUESTION_SYSTEM = """\
+Ты — ДТП-ассистент. Пользователь задаёт вопрос в процессе оформления ДТП.
+Дай краткий конкретный ответ, опираясь только на контекст из базы знаний.
+Если ответа в контексте нет — скажи об этом одним предложением.
+Не задавай уточняющих вопросов.
+
+Контекст из базы знаний:
+{context}
+"""
+
+
+def _looks_like_question(query: str) -> bool:
+    """Детерминированная проверка — содержит ли сообщение вопрос."""
+    q = query.strip().lower()
+    if "?" in q:
+        return True
+    return any(q.startswith(s) for s in _QUESTION_STARTS)
+
+
+def _answer_step_question(
+    query: str,
+    db,
+    feedback_db,
+    category: str,
+) -> str | None:
+    """
+    Отвечает на вопрос пользователя через RAG.
+    Вызывается только если _looks_like_question() вернул True.
+    При любой ошибке возвращает None — не блокирует основной flow.
+    """
+    try:
+        context = get_context_for_category(db, feedback_db, query, category)
+        with _make_giga() as giga:
+            payload = Chat(
+                messages=[
+                    Messages(
+                        role=MessagesRole.SYSTEM,
+                        content=_STEP_QUESTION_SYSTEM.format(context=context),
+                    ),
+                    Messages(role=MessagesRole.USER, content=query),
+                ],
+                temperature=0.1,
+            )
+            response = giga.chat(payload)
+            return response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"[core] step question error: {e}")
+        return None
+
+
+def _inject_rag_if_question(
+    query: str,
+    step_result: dict,
+    db,
+    feedback_db,
+    category: str,
+) -> dict:
+    """
+    Если запрос содержит вопрос и шаг ещё не завершён —
+    добавляет RAG-ответ перед вопросом агента.
+    """
+    if (
+        _looks_like_question(query)
+        and not step_result.get("step_completed")
+        and step_result.get("answer")
+    ):
+        rag_answer = _answer_step_question(query, db, feedback_db, category)
+        if rag_answer:
+            step_result = dict(step_result)
+            step_result["answer"] = (
+                rag_answer + "\n\n---\n\n" + step_result["answer"]
+            )
+    return step_result
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +214,7 @@ def _route_by_step(
     disagreement_db,
 ) -> dict:
 
+    # --- STEP 1: сбор фактов + RAG для вопросов ---
     if current_step == Step.STEP1:
         if slots.get("disagreement_help_active"):
             return _handle_with_error_guard(
@@ -140,27 +224,31 @@ def _route_by_step(
                 ),
                 "disagreement_help",
             )
-        return _handle_with_error_guard(
+        step_result = _handle_with_error_guard(
             lambda giga: _step_response_to_dict(
                 process_step1_with_llm(giga, query, history, slots),
                 "step1",
             ),
             "step1",
         )
+        return _inject_rag_if_question(query, step_result, db, feedback_db, "general_questions")
 
-    # OFFER_METHOD маппится в тот же обработчик — один экран для пользователя
+    # --- OFFER_EUROPROTOCOL + OFFER_METHOD ---
     if current_step in (Step.OFFER_EUROPROTOCOL, Step.OFFER_METHOD):
         return _run_offer_europrotocol(query, history, slots)
 
+    # --- STEP 2: заполнение протокола + RAG для вопросов ---
     if current_step == Step.STEP2:
-        return _handle_with_error_guard(
+        step_result = _handle_with_error_guard(
             lambda giga: _step_response_to_dict(
                 process_step2_with_llm(giga, query, history, slots, collected_fields),
                 "step2",
             ),
             "step2",
         )
+        return _inject_rag_if_question(query, step_result, db, feedback_db, "filling_europrotocol")
 
+    # --- FILL_EXTERNAL ---
     if current_step == Step.FILL_EXTERNAL:
         return _handle_with_error_guard(
             lambda giga: _step_response_to_dict(
@@ -172,16 +260,17 @@ def _route_by_step(
             "fill_external",
         )
 
+    # --- STEP 3 ---
     if current_step == Step.STEP3:
         return _handle_with_error_guard(
             lambda giga: _step_response_to_dict(
-                # Исправлен баг: передаём collected_fields, не final_json
                 process_step3(giga, query, history, collected_fields, db, feedback_db),
                 "step3",
             ),
             "step3",
         )
 
+    # --- Консультант ---
     if current_step == Step.CONSULTANT_ONLY:
         return _run_consultant(query, history, db, feedback_db)
 
@@ -190,36 +279,23 @@ def _route_by_step(
 
 
 # ---------------------------------------------------------------------------
-# OFFER_EUROPROTOCOL — лимиты + выбор метода в одном экране
+# OFFER_EUROPROTOCOL
 # ---------------------------------------------------------------------------
 
 def _run_offer_europrotocol(query: str, history: list, slots: dict) -> dict:
-    """
-    Единый экран предложения Европротокола.
-
-    Первый вход: показывает лимиты + три варианта.
-    Последующие: распознаёт выбор и маршрутизирует напрямую в нужный шаг.
-    answer=None никогда не возвращается.
-    """
     q = query.strip().lower()
 
-    # --- Отказ ---
     if any(kw in q for kw in _KW_REFUSE):
         return {
             "answer": (
                 "Понял. Для оформления ДТП вызовите ГИБДД (102). "
                 "Продолжаю работать в режиме консультанта."
             ),
-            "source": "offer",
-            "category": None,
-            "step_completed": True,
-            "next_step": Step.CONSULTANT_ONLY,
-            "slots": slots,
-            "collected_fields": None,
-            "final_json": None,
+            "source": "offer", "category": None,
+            "step_completed": True, "next_step": Step.CONSULTANT_ONLY,
+            "slots": slots, "collected_fields": None, "final_json": None,
         }
 
-    # --- Наше приложение ---
     if any(kw in q for kw in _KW_OUR_APP):
         prefilled = slots.get("_prefilled", {})
         slots_clean = {k: v for k, v in slots.items() if k != "_prefilled"}
@@ -230,44 +306,34 @@ def _run_offer_europrotocol(query: str, history: list, slots: dict) -> dict:
                 "Укажите дату и точное время ДТП.\n"
                 "Формат: ДД.ММ.ГГГГ ЧЧ:ММ — например, 15.01.2025 14:30"
             ),
-            "source": "offer",
-            "category": None,
-            "step_completed": True,
-            "next_step": Step.STEP2,
-            "slots": slots_clean,
-            "collected_fields": prefilled,
-            "final_json": None,
+            "source": "offer", "category": None,
+            "step_completed": True, "next_step": Step.STEP2,
+            "slots": slots_clean, "collected_fields": prefilled, "final_json": None,
         }
 
-    # --- Стороннее приложение ---
     if any(kw in q for kw in _KW_EXT_APP):
         updated_slots = {**slots, "fill_method": "app_external"}
         return {
             "answer": _ENTRY_MESSAGE_APP,
-            "source": "offer",
-            "category": None,
-            "step_completed": True,
-            "next_step": Step.FILL_EXTERNAL,
+            "source": "offer", "category": None,
+            "step_completed": True, "next_step": Step.FILL_EXTERNAL,
             "slots": updated_slots,
             "collected_fields": slots.get("_prefilled", {}),
             "final_json": None,
         }
 
-    # --- Бумажный бланк ---
     if any(kw in q for kw in _KW_PAPER):
         updated_slots = {**slots, "fill_method": "paper"}
         return {
             "answer": _ENTRY_MESSAGE_PAPER,
-            "source": "offer",
-            "category": None,
-            "step_completed": True,
-            "next_step": Step.FILL_EXTERNAL,
+            "source": "offer", "category": None,
+            "step_completed": True, "next_step": Step.FILL_EXTERNAL,
             "slots": updated_slots,
             "collected_fields": slots.get("_prefilled", {}),
             "final_json": None,
         }
 
-    # --- Первый вход или нераспознанный ввод ---
+    # Первый вход — показываем лимиты + варианты
     check_result = process_step2_check(slots, has_app=True)
     base = check_result.limits.get("base", 100_000)
 
@@ -296,13 +362,9 @@ def _run_offer_europrotocol(query: str, history: list, slots: dict) -> dict:
             "**3** — на бумажном бланке\n\n"
             "Чтобы вызвать ГИБДД — напишите «нет» или «ГИБДД»."
         ),
-        "source": "offer",
-        "category": None,
-        "step_completed": False,
-        "next_step": Step.OFFER_EUROPROTOCOL,
-        "slots": slots,
-        "collected_fields": None,
-        "final_json": None,
+        "source": "offer", "category": None,
+        "step_completed": False, "next_step": Step.OFFER_EUROPROTOCOL,
+        "slots": slots, "collected_fields": None, "final_json": None,
     }
 
 
@@ -391,14 +453,9 @@ def _handle_with_error_guard(handler, step_name: str) -> dict:
 
 def _ok(answer: str, source: str, category: str | None) -> dict:
     return {
-        "answer": answer,
-        "source": source,
-        "category": category,
-        "step_completed": False,
-        "next_step": None,
-        "slots": None,
-        "collected_fields": None,
-        "final_json": None,
+        "answer": answer, "source": source, "category": category,
+        "step_completed": False, "next_step": None,
+        "slots": None, "collected_fields": None, "final_json": None,
     }
 
 
@@ -407,11 +464,8 @@ def _step_response_to_dict(result: StepResponse, source: str) -> dict:
     if result.prefilled_fields:
         slots_out["_prefilled"] = result.prefilled_fields
     return {
-        "answer": result.answer,
-        "source": source,
-        "category": None,
-        "step_completed": result.step_completed,
-        "next_step": result.next_step,
+        "answer": result.answer, "source": source, "category": None,
+        "step_completed": result.step_completed, "next_step": result.next_step,
         "slots": slots_out,
         "collected_fields": result.collected_fields or {},
         "final_json": result.final_json,
@@ -424,11 +478,7 @@ def _step_error_response() -> dict:
             "Произошла техническая ошибка. "
             "Если вы в опасной ситуации — немедленно звоните 112."
         ),
-        "source": "error",
-        "category": None,
-        "step_completed": False,
-        "next_step": Step.STEP1,
-        "slots": {},
-        "collected_fields": {},
-        "final_json": None,
+        "source": "error", "category": None,
+        "step_completed": False, "next_step": Step.STEP1,
+        "slots": {}, "collected_fields": {}, "final_json": None,
     }

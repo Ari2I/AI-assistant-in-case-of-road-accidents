@@ -1,24 +1,13 @@
 """
 Step 2: Пошаговое заполнение Европротокола.
 
-Архитектура хранения данных:
-  - collected_fields: плоский dict с ключами вида vehicle_a_make_model.
-    Используется внутри агента для трекинга заполнения.
-  - final_json.data: вложенная структура (accident / vehicle_a / vehicle_b / ...).
-    Передаётся бэкенду для генерации PDF.
-
-Реформулировка текстовых полей:
-  Поля с произвольным описанием (обстоятельства, повреждения, схема) не сохраняются
-  напрямую из слов пользователя. LLM предлагает официальную формулировку,
-  пользователь подтверждает / редактирует / отклоняет.
-
-  Ожидающая подтверждения формулировка хранится в collected_fields под
-  ключом _PENDING_KEY и передаётся Django между запросами как часть словаря.
-
-Структура вопросов:
-  FIELDS_CONFIG описывает 13 групп вопросов. Каждая группа заполняет
-  один или несколько плоских ключей. Группа считается завершённой,
-  когда заполнены все её required_keys.
+Изменения vs предыдущей версии:
+  - _FLAT_KEYS_DESCRIPTION: добавлена явная разметка vehicle_a = пользователь,
+    vehicle_b = второй участник — устраняет крос-контаминацию полей
+  - _FIELD_EXTRACTION_PROMPT: добавлены few-shot примеры разделения участников
+    и правило не обрывать circumstances/scheme на полуслове
+  - _build_final_data: возвращает плоский dict вместо вложенного —
+    структура совпадает с collected_fields, бэкенд сам группирует для PDF
 """
 
 from __future__ import annotations
@@ -39,14 +28,13 @@ LIMIT_WITH_APP_NO_DISAGREEMENT = 400_000
 LIMIT_WITH_APP_DISAGREEMENT = 200_000
 
 # ---------------------------------------------------------------------------
-# Ключ для хранения ожидающей подтверждения реформулировки
+# Служебный ключ для хранения ожидающей подтверждения реформулировки
 # ---------------------------------------------------------------------------
 
 _PENDING_KEY = "_pending_reformulation"
 
 # ---------------------------------------------------------------------------
-# Поля, требующие реформулировки перед сохранением.
-# Числовые, именные и идентификационные поля реформулировки не требуют.
+# Поля, требующие реформулировки перед сохранением
 # ---------------------------------------------------------------------------
 
 _FIELDS_NEEDING_REFORMULATION: frozenset[str] = frozenset({
@@ -86,14 +74,12 @@ _REFORMULATION_PROMPT = """\
 Верни ТОЛЬКО переформулированный текст — без пояснений, кавычек и markdown.
 """
 
-# Фразы, которые означают одобрение реформулировки
 _APPROVAL_PHRASES: frozenset[str] = frozenset({
     "да", "ок", "ok", "хорошо", "верно", "правильно", "согласен", "согласна",
     "подтверждаю", "подтверждаю.", "да.", "ок.", "ладно", "отлично", "супер",
     "принято", "принять", "сохранить", "сохрани",
 })
 
-# Фразы, которые означают отклонение реформулировки (сохраняем оригинал)
 _REJECTION_PHRASES: frozenset[str] = frozenset({
     "нет", "нет.", "отклонить", "отклоняю", "не подходит", "не то",
     "неверно", "неправильно", "оставь оригинал", "оставить оригинал",
@@ -122,17 +108,17 @@ FIELDS_CONFIG: dict[str, dict] = {
         "required_keys": ["location"],
     },
     "vehicle_a_base": {
-        "prompt": "Данные автомобиля А: марка/модель и государственный номер.",
+        "prompt": "Данные вашего автомобиля: марка/модель и государственный номер.",
         "instruction": "Пример: Toyota Camry, госномер А123БВ777",
         "keys": ["vehicle_a_make_model", "vehicle_a_reg_number"],
         "key_prompts": {
-            "vehicle_a_make_model": "Укажите марку и модель автомобиля А.\nПример: Toyota Camry",
-            "vehicle_a_reg_number": "Укажите государственный номер автомобиля А.\nПример: А123БВ777",
+            "vehicle_a_make_model": "Укажите марку и модель вашего автомобиля.\nПример: Toyota Camry",
+            "vehicle_a_reg_number": "Укажите государственный номер вашего автомобиля.\nПример: А123БВ777",
         },
     },
     "vehicle_a_persons": {
         "prompt": (
-            "Владелец авто А: ФИО. "
+            "Владелец вашего авто: ФИО. "
             "Водитель (если отличается от владельца): ФИО и номер водительского удостоверения."
         ),
         "instruction": "Если водитель = владелец — укажите одни данные.",
@@ -140,34 +126,34 @@ FIELDS_CONFIG: dict[str, dict] = {
         "required_keys": ["vehicle_a_owner_name", "vehicle_a_driver_name"],
     },
     "vehicle_a_insurance": {
-        "prompt": "Страховая компания авто А, серия и номер полиса ОСАГО, дата окончания.",
+        "prompt": "Ваша страховая компания, серия и номер полиса ОСАГО, дата окончания.",
         "instruction": "Пример: Росгосстрах, ХХХ 1234567890, действует до 31.12.2025",
         "keys": ["vehicle_a_insurer", "vehicle_a_policy_number", "vehicle_a_policy_expiry"],
     },
     "vehicle_a_damage": {
-        "prompt": "Место первоначального удара на авто А и перечень видимых повреждений.",
+        "prompt": "Место первоначального удара на вашем авто и перечень видимых повреждений.",
         "instruction": (
             "Место удара — конкретная деталь: бампер, дверь, крыло. "
             "Повреждения: вмятина / царапина / трещина. Только видимые."
         ),
         "keys": ["vehicle_a_impact_point", "vehicle_a_damage"],
         "key_prompts": {
-            "vehicle_a_impact_point": "Укажите место первоначального удара на авто А.\nПример: левое переднее крыло",
-            "vehicle_a_damage": "Перечислите видимые повреждения авто А.\nПример: левое переднее крыло — вмятина, бампер — царапина",
+            "vehicle_a_impact_point": "Укажите место первоначального удара на вашем авто.\nПример: левое переднее крыло",
+            "vehicle_a_damage": "Перечислите видимые повреждения вашего авто.\nПример: левое переднее крыло — вмятина, бампер — царапина",
         },
     },
     "vehicle_b_base": {
-        "prompt": "Данные автомобиля Б: марка/модель и государственный номер.",
+        "prompt": "Данные автомобиля второго участника: марка/модель и государственный номер.",
         "instruction": "Пример: Honda Civic, госномер В456ГД777",
         "keys": ["vehicle_b_make_model", "vehicle_b_reg_number"],
         "key_prompts": {
-            "vehicle_b_make_model": "Укажите марку и модель автомобиля Б.\nПример: Honda Civic",
-            "vehicle_b_reg_number": "Укажите государственный номер автомобиля Б.\nПример: В456ГД777",
+            "vehicle_b_make_model": "Укажите марку и модель автомобиля второго участника.\nПример: Honda Civic",
+            "vehicle_b_reg_number": "Укажите государственный номер автомобиля второго участника.\nПример: В456ГД777",
         },
     },
     "vehicle_b_persons": {
         "prompt": (
-            "Владелец авто Б: ФИО. "
+            "Владелец авто второго участника: ФИО. "
             "Водитель (если отличается от владельца): ФИО и номер водительского удостоверения."
         ),
         "instruction": "Если водитель = владелец — укажите одни данные.",
@@ -175,17 +161,17 @@ FIELDS_CONFIG: dict[str, dict] = {
         "required_keys": ["vehicle_b_owner_name", "vehicle_b_driver_name"],
     },
     "vehicle_b_insurance": {
-        "prompt": "Страховая компания авто Б, серия и номер полиса ОСАГО, дата окончания.",
+        "prompt": "Страховая компания второго участника, серия и номер полиса ОСАГО, дата окончания.",
         "instruction": "Пример: СОГАЗ, ЕЕЕ 0987654321, действует до 30.06.2025",
         "keys": ["vehicle_b_insurer", "vehicle_b_policy_number", "vehicle_b_policy_expiry"],
     },
     "vehicle_b_damage": {
-        "prompt": "Место первоначального удара на авто Б и перечень видимых повреждений.",
+        "prompt": "Место первоначального удара на авто второго участника и перечень видимых повреждений.",
         "instruction": "Место удара — деталь. Повреждения: вмятина / царапина / трещина.",
         "keys": ["vehicle_b_impact_point", "vehicle_b_damage"],
         "key_prompts": {
-            "vehicle_b_impact_point": "Укажите место первоначального удара на авто Б.\nПример: задний бампер",
-            "vehicle_b_damage": "Перечислите видимые повреждения авто Б.\nПример: задний бампер — трещина",
+            "vehicle_b_impact_point": "Укажите место первоначального удара на авто второго участника.\nПример: задний бампер",
+            "vehicle_b_damage": "Перечислите видимые повреждения авто второго участника.\nПример: задний бампер — трещина",
         },
     },
     "fault_circumstances": {
@@ -223,41 +209,63 @@ FIELDS_CONFIG: dict[str, dict] = {
 
 FIELDS_ORDER: list[str] = list(FIELDS_CONFIG.keys())
 
+# ---------------------------------------------------------------------------
+# Описание полей для промпта извлечения
+# ИСПРАВЛЕНО: добавлена явная разметка участников A и B
+# ---------------------------------------------------------------------------
+
 _FLAT_KEYS_DESCRIPTION = """
+⚠️ КРИТИЧЕСКИ ВАЖНО — РАЗЛИЧАЙ УЧАСТНИКОВ ДТП:
+
+  vehicle_a_* = автомобиль и данные ПОЛЬЗОВАТЕЛЯ (того, кто заполняет форму)
+    Признаки в тексте: «я», «мой», «моя машина», «мой автомобиль», «мне», «у меня»
+
+  vehicle_b_* = автомобиль и данные ВТОРОГО участника
+    Признаки в тексте: «второй», «другой водитель», «его машина», «её машина»,
+                       «второй участник», «другой автомобиль»
+
+  ЗАПРЕЩЕНО переносить данные участника А в поля vehicle_b и наоборот!
+  Если принадлежность данных неясна — НЕ извлекай их.
+
 date: дата ДТП (формат: ДД.ММ.ГГГГ)
 time: время ДТП (формат: ЧЧ:ММ)
 location: точное место ДТП — город, улица, дом или км трассы
-witnesses: данные свидетелей (ФИО, телефон) или null
+witnesses: данные свидетелей (ФИО, телефон) или "нет"
 
-vehicle_a_make_model: марка и модель авто А
-vehicle_a_reg_number: государственный номер авто А
-vehicle_a_owner_name: ФИО владельца авто А
-vehicle_a_driver_name: ФИО водителя авто А
-vehicle_a_driver_license: номер водительского удостоверения водителя А
-vehicle_a_insurer: название страховой компании авто А
-vehicle_a_policy_number: серия и номер полиса ОСАГО авто А
-vehicle_a_policy_expiry: дата окончания полиса ОСАГО авто А
-vehicle_a_impact_point: деталь первоначального удара на авто А
-vehicle_a_damage: перечень видимых повреждений авто А
-vehicle_a_fault: признание вины водителя А ("виноват" / "не виноват")
+vehicle_a_make_model: марка и модель автомобиля ПОЛЬЗОВАТЕЛЯ
+vehicle_a_reg_number: государственный номер автомобиля ПОЛЬЗОВАТЕЛЯ
+vehicle_a_owner_name: ФИО владельца автомобиля ПОЛЬЗОВАТЕЛЯ
+vehicle_a_driver_name: ФИО водителя автомобиля ПОЛЬЗОВАТЕЛЯ
+vehicle_a_driver_license: номер ВУ водителя автомобиля ПОЛЬЗОВАТЕЛЯ
+vehicle_a_insurer: страховая компания автомобиля ПОЛЬЗОВАТЕЛЯ
+vehicle_a_policy_number: серия и номер полиса ОСАГО автомобиля ПОЛЬЗОВАТЕЛЯ
+vehicle_a_policy_expiry: срок действия полиса ОСАГО автомобиля ПОЛЬЗОВАТЕЛЯ
+vehicle_a_impact_point: деталь первоначального удара на автомобиле ПОЛЬЗОВАТЕЛЯ
+vehicle_a_damage: повреждения автомобиля ПОЛЬЗОВАТЕЛЯ
+vehicle_a_fault: вина водителя ПОЛЬЗОВАТЕЛЯ ("виноват" / "не виноват")
 
-vehicle_b_make_model: марка и модель авто Б
-vehicle_b_reg_number: государственный номер авто Б
-vehicle_b_owner_name: ФИО владельца авто Б
-vehicle_b_driver_name: ФИО водителя авто Б
-vehicle_b_driver_license: номер водительского удостоверения водителя Б
-vehicle_b_insurer: название страховой компании авто Б
-vehicle_b_policy_number: серия и номер полиса ОСАГО авто Б
-vehicle_b_policy_expiry: дата окончания полиса ОСАГО авто Б
-vehicle_b_impact_point: деталь первоначального удара на авто Б
-vehicle_b_damage: перечень видимых повреждений авто Б
-vehicle_b_fault: признание вины водителя Б ("виноват" / "не виноват")
+vehicle_b_make_model: марка и модель автомобиля ВТОРОГО участника
+vehicle_b_reg_number: государственный номер автомобиля ВТОРОГО участника
+vehicle_b_owner_name: ФИО владельца автомобиля ВТОРОГО участника
+vehicle_b_driver_name: ФИО водителя автомобиля ВТОРОГО участника
+vehicle_b_driver_license: номер ВУ водителя ВТОРОГО участника
+vehicle_b_insurer: страховая компания ВТОРОГО участника
+vehicle_b_policy_number: серия и номер полиса ОСАГО ВТОРОГО участника
+vehicle_b_policy_expiry: срок действия полиса ОСАГО ВТОРОГО участника
+vehicle_b_impact_point: деталь первоначального удара на автомобиле ВТОРОГО участника
+vehicle_b_damage: повреждения автомобиля ВТОРОГО участника
+vehicle_b_fault: вина водителя ВТОРОГО участника ("виноват" / "не виноват")
 
-circumstances: обстоятельства ДТП (свободный текст)
-scheme: схема ДТП (свободный текст)
+circumstances: обстоятельства ДТП — ПОЛНЫЙ текст (кто куда ехал, манёвры, столкновение)
+scheme: схема ДТП — ПОЛНЫЙ текст (взаимное положение ТС, направления движения)
 has_disagreement: есть ли разногласия между участниками (true / false)
-signatures_confirmed: оба водителя готовы подписать извещение (true / false)
+signatures_confirmed: оба водителя готовы подписать (true / false)
 """
+
+# ---------------------------------------------------------------------------
+# Промпт извлечения полей
+# ИСПРАВЛЕНО: few-shot примеры разделения участников + правило не обрывать текст
+# ---------------------------------------------------------------------------
 
 _FIELD_EXTRACTION_PROMPT = """\
 Извлеки данные для Европротокола из сообщения пользователя.
@@ -276,9 +284,47 @@ _FIELD_EXTRACTION_PROMPT = """\
 - Если сообщение содержит данные и для других незаполненных полей — тоже извлеки.
 - Не перезаписывай уже заполненные поля.
 - Если данных для поля нет — не включай ключ в ответ.
-- Для signatures_confirmed: "да", "ок", "подпишем" и подобные → true.
-- Для witnesses: "нет", "свидетелей нет" → сохрани строку "нет".
+- Для circumstances и scheme: извлекай ПОЛНЫЙ текст, не обрывай на полуслове.
+- Для signatures_confirmed: «да», «ок», «подпишем», «подписали» → true.
+- Для witnesses: «нет», «свидетелей нет» → сохрани строку "нет".
 - Верни ТОЛЬКО валидный JSON без пояснений и markdown.
+
+--- ПРИМЕРЫ ---
+
+ПРИМЕР 1 — разделение участников (самое важное):
+Сообщение: «Я на Toyota Camry А111БВ77, страховая Росгосстрах, полис ХХХ 0001
+            до 31.12.2025. Второй — Kia Rio В222ГД77, страховая СОГАЗ,
+            полис ЕЕЕ 0002 до 30.06.2025. Я не виноват, виноват второй.»
+Ответ: {{
+  "vehicle_a_make_model": "Toyota Camry",
+  "vehicle_a_reg_number": "А111БВ77",
+  "vehicle_a_insurer": "Росгосстрах",
+  "vehicle_a_policy_number": "ХХХ 0001",
+  "vehicle_a_policy_expiry": "31.12.2025",
+  "vehicle_a_fault": "не виноват",
+  "vehicle_b_make_model": "Kia Rio",
+  "vehicle_b_reg_number": "В222ГД77",
+  "vehicle_b_insurer": "СОГАЗ",
+  "vehicle_b_policy_number": "ЕЕЕ 0002",
+  "vehicle_b_policy_expiry": "30.06.2025",
+  "vehicle_b_fault": "виноват"
+}}
+
+ПРИМЕР 2 — полный текст обстоятельств (не обрывать):
+Сообщение: «Обстоятельства: я ехал прямо по правой полосе,
+            второй выезжал задним ходом и въехал в мой бампер.»
+Ответ: {{
+  "circumstances": "я ехал прямо по правой полосе, второй выезжал задним ходом и въехал в мой бампер."
+}}
+
+ПРИМЕР 3 — данные одного человека (водитель = владелец):
+Сообщение: «Водитель и владелец — один человек»
+Ответ: {{
+  "vehicle_a_driver_name": "<значение vehicle_a_owner_name из уже заполненных полей>"
+}}
+Пояснение: если vehicle_a_owner_name уже заполнен, vehicle_a_driver_name = то же значение.
+
+--- КОНЕЦ ПРИМЕРОВ ---
 
 Сообщение пользователя: "{message}"
 """
@@ -434,12 +480,6 @@ def process_step2_check(slots: dict, has_app: bool) -> EuroprotocolCheckResult:
 # ---------------------------------------------------------------------------
 
 def _reformulate_field(giga: GigaChat, field: str, original_text: str) -> str:
-    """
-    Вызывает LLM для реформулировки произвольного описания в официальный стиль
-    Европротокола.
-
-    При ошибке возвращает оригинальный текст без изменений.
-    """
     field_description = _FIELD_DESCRIPTIONS_FOR_REFORMULATION.get(field, field)
     prompt = _REFORMULATION_PROMPT.format(
         field_description=field_description,
@@ -475,10 +515,6 @@ def _build_pending_proposal(
         original: str,
         remaining: dict[str, str],
 ) -> tuple[dict, str] | None:
-    """
-    Возвращает None если реформулировка совпала с оригиналом или не удалась —
-    в этом случае поле нужно сохранить напрямую без диалога с пользователем.
-    """
     reformulated = _reformulate_field(giga, field, original)
 
     if reformulated == original:
@@ -510,14 +546,6 @@ def _handle_reformulation_response(
         collected_fields: dict,
         pending: dict,
 ) -> StepResponse:
-    """
-    Обрабатывает ответ пользователя на предложение реформулировки.
-
-    Логика:
-      - "да" / одобрение → сохраняем reformulated
-      - "нет" / отклонение → сохраняем original (предупреждаем)
-      - любой другой текст → считаем правкой пользователя, сохраняем его вариант
-    """
     q = query.strip().lower().rstrip("!.,?")
     field = pending["field"]
 
@@ -530,17 +558,27 @@ def _handle_reformulation_response(
             "\n\n⚠️ Сохранена ваша исходная формулировка без изменений. "
             "Это может затруднить обработку страховой компанией."
         )
+    elif not q:
+        # Пустой ввод — просим повторить, не сохраняем
+        field_desc = _FIELD_DESCRIPTIONS_FOR_REFORMULATION.get(field, field)
+        return StepResponse(
+            answer=(
+                f"Пожалуйста, подтвердите формулировку для «{field_desc}»:\n\n"
+                f"«{pending['reformulated']}»\n\n"
+                f"Напишите «да» для подтверждения, «нет» для сохранения вашего варианта, "
+                f"или введите собственный текст."
+            ),
+            step_completed=False,
+            next_step=Step.STEP2,
+            collected_fields=collected_fields,
+        )
     else:
-        # Пользователь предоставил собственный вариант
         saved_value = query.strip()
         save_note = ""
 
     collected_fields[field] = saved_value
-
-    # Убираем pending
     collected_fields.pop(_PENDING_KEY, None)
 
-    # Есть ещё поля в очереди на реформулировку?
     remaining: dict[str, str] = pending.get("remaining", {})
     if remaining:
         remaining_items = list(remaining.items())
@@ -548,9 +586,7 @@ def _handle_reformulation_response(
             next_field, next_original = remaining_items.pop(0)
             next_remaining = dict(remaining_items)
 
-            proposal = _build_pending_proposal(
-                giga, next_field, next_original, next_remaining
-            )
+            proposal = _build_pending_proposal(giga, next_field, next_original, next_remaining)
 
             if proposal is None:
                 collected_fields[next_field] = next_original
@@ -567,7 +603,6 @@ def _handle_reformulation_response(
                 collected_fields=collected_fields,
             )
 
-    # Все реформулировки обработаны — переходим к следующей группе
     if save_note:
         prefix = "Записан ваш вариант." + save_note + "\n\n"
     else:
@@ -598,12 +633,9 @@ def _continue_after_save(collected_fields: dict, prefix: str = "") -> StepRespon
         )
 
     config = FIELDS_CONFIG[current_group]
-
-    # Ищем первый незаполненный обязательный ключ текущей группы
     required = config.get("required_keys", config["keys"])
     missing_key = next((k for k in required if not collected_fields.get(k)), None)
 
-    # Если есть целевой вопрос для этого конкретного ключа — используем его
     key_prompts = config.get("key_prompts", {})
     if missing_key and missing_key in key_prompts:
         question = key_prompts[missing_key]
@@ -623,11 +655,6 @@ def _continue_after_save(collected_fields: dict, prefix: str = "") -> StepRespon
 # ---------------------------------------------------------------------------
 
 def _get_current_group(collected: dict) -> str | None:
-    """
-    Возвращает id первой незавершённой группы вопросов.
-    Группа завершена, если все её required_keys заполнены.
-    Ключ _PENDING_KEY не учитывается при проверке.
-    """
     for group_id, config in FIELDS_CONFIG.items():
         required = config.get("required_keys", config["keys"])
         if not all(collected.get(k) for k in required):
@@ -641,18 +668,15 @@ def _extract_fields_llm(
         existing: dict,
         current_group: str = "",
 ) -> dict:
-    """
-    Вызывает LLM для извлечения плоских ключей из сообщения пользователя.
-    Делает до 2 попыток при пустом результате.
-
-    Ключ _PENDING_KEY исключён из existing при передаче в промпт.
-    """
-    # Исключаем служебный ключ из вывода "уже заполненных полей"
     existing_clean = {k: v for k, v in existing.items() if k != _PENDING_KEY}
 
+    # Если владелец уже заполнен, а водитель нет — добавляем подсказку в filled
+    # чтобы LLM мог применить правило «водитель = владелец» из примера 3
+    display_existing = dict(existing_clean)
+
     filled_str = (
-        "\n".join(f"  {k}: {v}" for k, v in existing_clean.items())
-        if existing_clean else "  (нет заполненных полей)"
+        "\n".join(f"  {k}: {v}" for k, v in display_existing.items())
+        if display_existing else "  (нет заполненных полей)"
     )
 
     current_keys = ""
@@ -697,7 +721,7 @@ def _extract_fields_llm(
 
             extracted = json.loads(content)
             result = {k: v for k, v in extracted.items() if v is not None}
-            had_any_success = True  # хотя бы распарсили — значит не сетевая ошибка
+            had_any_success = True
             if result:
                 return result
 
@@ -705,7 +729,6 @@ def _extract_fields_llm(
             print(f"[step2] field extraction error (attempt {attempt + 1}): {e}")
             last_exception = e
 
-    # Обе попытки упали с исключением — пробрасываем наружу
     if not had_any_success and last_exception:
         raise last_exception
 
@@ -713,13 +736,6 @@ def _extract_fields_llm(
 
 
 def _map_slots_to_fields(giga: GigaChat, slots: dict, history: list) -> dict:
-    """
-    Извлекает данные для step2 из всей истории диалога (step1).
-    Вызывается ОДИН РАЗ при первом входе в step2.
-
-    Текстовые поля, требующие реформулировки, НЕ сохраняются сразу — они будут
-    предложены пользователю для подтверждения в первом же шаге step2.
-    """
     if not history:
         return {}
 
@@ -748,47 +764,12 @@ def _map_slots_to_fields(giga: GigaChat, slots: dict, history: list) -> dict:
 
 def _build_final_data(fields: dict) -> dict:
     """
-    Конвертирует плоский dict collected_fields в вложенную структуру для бэкенда.
-    Служебный ключ _PENDING_KEY при этом отбрасывается.
+    Возвращает плоский dict collected_fields без служебных ключей.
+    Структура совпадает с тем, что накапливалось в collected_fields —
+    бэкенд сам решает как сгруппировать поля для PDF-генератора.
     """
-    return {
-        "accident": {
-            "date": fields.get("date"),
-            "time": fields.get("time"),
-            "location": fields.get("location"),
-            "witnesses": fields.get("witnesses"),
-        },
-        "vehicle_a": {
-            "make_model": fields.get("vehicle_a_make_model"),
-            "reg_number": fields.get("vehicle_a_reg_number"),
-            "owner_name": fields.get("vehicle_a_owner_name"),
-            "driver_name": fields.get("vehicle_a_driver_name"),
-            "driver_license": fields.get("vehicle_a_driver_license"),
-            "insurer": fields.get("vehicle_a_insurer"),
-            "policy_number": fields.get("vehicle_a_policy_number"),
-            "policy_expiry": fields.get("vehicle_a_policy_expiry"),
-            "impact_point": fields.get("vehicle_a_impact_point"),
-            "damage": fields.get("vehicle_a_damage"),
-            "fault": fields.get("vehicle_a_fault"),
-        },
-        "vehicle_b": {
-            "make_model": fields.get("vehicle_b_make_model"),
-            "reg_number": fields.get("vehicle_b_reg_number"),
-            "owner_name": fields.get("vehicle_b_owner_name"),
-            "driver_name": fields.get("vehicle_b_driver_name"),
-            "driver_license": fields.get("vehicle_b_driver_license"),
-            "insurer": fields.get("vehicle_b_insurer"),
-            "policy_number": fields.get("vehicle_b_policy_number"),
-            "policy_expiry": fields.get("vehicle_b_policy_expiry"),
-            "impact_point": fields.get("vehicle_b_impact_point"),
-            "damage": fields.get("vehicle_b_damage"),
-            "fault": fields.get("vehicle_b_fault"),
-        },
-        "circumstances": fields.get("circumstances"),
-        "scheme": fields.get("scheme"),
-        "has_disagreement": fields.get("has_disagreement", False),
-        "signatures_confirmed": fields.get("signatures_confirmed"),
-    }
+    skip = {_PENDING_KEY}
+    return {k: v for k, v in fields.items() if k not in skip}
 
 
 # ---------------------------------------------------------------------------
@@ -802,20 +783,6 @@ def process_step2_with_llm(
         slots: dict,
         collected_fields: dict,
 ) -> StepResponse:
-    """
-    Обрабатывает один шаг заполнения Европротокола.
-
-    Алгоритм:
-    1. Если в collected_fields есть _PENDING_KEY — пользователь отвечает на
-       предложение реформулировки. Передаём управление _handle_reformulation_response.
-    2. При первом входе (collected_fields пустой) prefill из истории step1.
-    3. Извлекаем данные из текущего сообщения пользователя.
-    4. Структурные поля (даты, имена, номера) сохраняем сразу.
-    5. Текстовые поля (_FIELDS_NEEDING_REFORMULATION) — реформулируем и предлагаем
-       пользователю для подтверждения через _PENDING_KEY.
-    6. Если все группы закрыты — формируем final_json.
-    """
-
     # ШАГ 1: ожидаем ответа на реформулировку
     pending = collected_fields.get(_PENDING_KEY)
     if pending:
@@ -825,10 +792,9 @@ def process_step2_with_llm(
     if not collected_fields:
         collected_fields = _map_slots_to_fields(giga, slots, history)
 
-    # Определяем текущую группу ДО извлечения (нужна как подсказка LLM)
     current_group = _get_current_group(collected_fields)
 
-    # ШАГ 3: извлечение данных из сообщения пользователя
+    # ШАГ 3: извлечение данных
     had_error = False
     try:
         new_data = _extract_fields_llm(giga, query, collected_fields, current_group or "")
@@ -842,7 +808,6 @@ def process_step2_with_llm(
             return _continue_after_save(collected_fields)
 
         if had_error:
-            # Сетевая или парсинговая ошибка — просим повторить с примером
             config = FIELDS_CONFIG[current_group]
             required = config.get("required_keys", config["keys"])
             missing_key = next((k for k in required if not collected_fields.get(k)), None)
@@ -863,10 +828,9 @@ def process_step2_with_llm(
                 collected_fields=collected_fields,
             )
 
-        # Ошибки не было, но данных нет — пользователь написал не по теме
         return _continue_after_save(collected_fields)
 
-    # ШАГ 4: разделяем поля на «сохранить сразу» и «требуют реформулировки»
+    # ШАГ 4: разделяем поля
     to_save_directly: dict[str, object] = {}
     to_reformulate: dict[str, str] = {}
 
@@ -874,30 +838,24 @@ def process_step2_with_llm(
         if v is None:
             continue
         if k in _FIELDS_NEEDING_REFORMULATION and isinstance(v, str) and v.strip():
-            # Поле уже заполнено → не перезаписываем
             if not collected_fields.get(k):
                 to_reformulate[k] = v
         else:
             to_save_directly[k] = v
 
-    # Сохраняем структурные поля немедленно
     for k, v in to_save_directly.items():
         collected_fields[k] = v
 
-    # ШАГ 5: если есть текстовые поля — запускаем цикл реформулировки
+    # ШАГ 5: реформулировка текстовых полей
     if to_reformulate:
-        # Проходим по очереди пока не найдём поле, которое реально изменилось
         remaining_items = list(to_reformulate.items())
         while remaining_items:
             first_field, first_original = remaining_items.pop(0)
             remaining = dict(remaining_items)
 
-            proposal = _build_pending_proposal(
-                giga, first_field, first_original, remaining
-            )
+            proposal = _build_pending_proposal(giga, first_field, first_original, remaining)
 
             if proposal is None:
-                # Реформулировка не дала результата — сохраняем оригинал напрямую
                 collected_fields[first_field] = first_original
                 continue
 
@@ -910,5 +868,6 @@ def process_step2_with_llm(
                 next_step=Step.STEP2,
                 collected_fields=collected_fields,
             )
-    # ШАГ 6: только структурные поля → продолжаем сбор
+
+    # ШАГ 6: только структурные поля — продолжаем сбор
     return _continue_after_save(collected_fields)
