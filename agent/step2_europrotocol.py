@@ -158,12 +158,18 @@ FIELDS_CONFIG: dict[str, dict] = {
         ),
         "instruction": "Если водитель = владелец — укажите одни данные.",
         "keys": ["vehicle_b_owner_name", "vehicle_b_driver_name", "vehicle_b_driver_license"],
-        "required_keys": ["vehicle_b_owner_name", "vehicle_b_driver_name"],
+        "required_keys": ["vehicle_b_owner_name", "vehicle_b_driver_name", "vehicle_b_driver_license"],
     },
     "vehicle_b_insurance": {
         "prompt": "Страховая компания второго участника, серия и номер полиса ОСАГО, дата окончания.",
         "instruction": "Пример: СОГАЗ, ЕЕЕ 0987654321, действует до 30.06.2025",
         "keys": ["vehicle_b_insurer", "vehicle_b_policy_number", "vehicle_b_policy_expiry"],
+        "key_prompts": {
+            "vehicle_b_insurer": "Укажите страховую второго участника .\nПример: СОГАЗ, СберСтрахование",
+            "vehicle_b_policy_number": "Укажите серию и номер полиса ОСАГО второго участника.\nПример: ЕЕЕ 0987654321",
+            "vehicle_b_policy_expiry": "Укажите сроки действия полиса ОСАГО второго участника.\nПример: действует до 30.06.2025",
+
+        },
     },
     "vehicle_b_damage": {
         "prompt": "Место первоначального удара на авто второго участника и перечень видимых повреждений.",
@@ -236,10 +242,10 @@ vehicle_a_make_model: марка и модель автомобиля ПОЛЬЗ
 vehicle_a_reg_number: государственный номер автомобиля ПОЛЬЗОВАТЕЛЯ
 vehicle_a_owner_name: ФИО владельца автомобиля ПОЛЬЗОВАТЕЛЯ
 vehicle_a_driver_name: ФИО водителя автомобиля ПОЛЬЗОВАТЕЛЯ
-vehicle_a_driver_license: номер ВУ водителя автомобиля ПОЛЬЗОВАТЕЛЯ
+vehicle_a_driver_license: номер ВУ водителя автомобиля ПОЛЬЗОВАТЕЛЯ. состоит из 10 цифр и имеет формат: XX XX YYYYYY
 vehicle_a_insurer: страховая компания автомобиля ПОЛЬЗОВАТЕЛЯ
-vehicle_a_policy_number: серия и номер полиса ОСАГО автомобиля ПОЛЬЗОВАТЕЛЯ
-vehicle_a_policy_expiry: срок действия полиса ОСАГО автомобиля ПОЛЬЗОВАТЕЛЯ
+vehicle_a_policy_number: серия и номер полиса ОСАГО автомобиля ПОЛЬЗОВАТЕЛЯ. Формат: ХХХ 0012345678
+vehicle_a_policy_expiry: срок действия полиса ОСАГО автомобиля ПОЛЬЗОВАТЕЛЯ. Формат: С 15.05.2026 по 14.05.2027 включительно
 vehicle_a_impact_point: деталь первоначального удара на автомобиле ПОЛЬЗОВАТЕЛЯ
 vehicle_a_damage: повреждения автомобиля ПОЛЬЗОВАТЕЛЯ
 vehicle_a_fault: вина водителя ПОЛЬЗОВАТЕЛЯ ("виноват" / "не виноват")
@@ -248,10 +254,10 @@ vehicle_b_make_model: марка и модель автомобиля ВТОРО
 vehicle_b_reg_number: государственный номер автомобиля ВТОРОГО участника
 vehicle_b_owner_name: ФИО владельца автомобиля ВТОРОГО участника
 vehicle_b_driver_name: ФИО водителя автомобиля ВТОРОГО участника
-vehicle_b_driver_license: номер ВУ водителя ВТОРОГО участника
+vehicle_b_driver_license: номер ВУ водителя ВТОРОГО участника. состоит из 10 цифр и имеет формат: XX XX YYYYYY
 vehicle_b_insurer: страховая компания ВТОРОГО участника
-vehicle_b_policy_number: серия и номер полиса ОСАГО ВТОРОГО участника
-vehicle_b_policy_expiry: срок действия полиса ОСАГО ВТОРОГО участника
+vehicle_b_policy_number: серия и номер полиса ОСАГО ВТОРОГО участника. Формат: ХХХ 0012345678
+vehicle_b_policy_expiry: срок действия полиса ОСАГО ВТОРОГО участника. Формат: С 15.05.2026 по 14.05.2027 включительно
 vehicle_b_impact_point: деталь первоначального удара на автомобиле ВТОРОГО участника
 vehicle_b_damage: повреждения автомобиля ВТОРОГО участника
 vehicle_b_fault: вина водителя ВТОРОГО участника ("виноват" / "не виноват")
