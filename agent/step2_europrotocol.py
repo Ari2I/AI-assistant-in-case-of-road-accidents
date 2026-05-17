@@ -183,6 +183,10 @@ FIELDS_CONFIG: dict[str, dict] = {
             "vehicle_b_driver_name": "Укажите ФИО водителя автомобиля второго участника.\nПример: Петров Пётр Петрович",
             "vehicle_b_driver_license": "Укажите номер водительского удостоверения водителя второго участника.\nПример: 77 77 654321",
         },
+        # Порядок заполнения: сначала владелец, потом водитель, потом права
+        "fill_order": ["vehicle_b_owner_name", "vehicle_b_driver_name", "vehicle_b_driver_license"],
+        # ВАЖНО: заполняем поля строго по порядку fill_order
+        "strict_order": True,
     },
     "vehicle_b_insurance": {
         "prompt": "Страховая компания второго участника, серия и номер полиса ОСАГО, дата окончания.",
@@ -281,11 +285,15 @@ vehicle_a_fault: вина водителя ПОЛЬЗОВАТЕЛЯ ("винов
 
 vehicle_b_make_model: марка и модель автомобиля ВТОРОГО участника
 vehicle_b_reg_number: государственный номер автомобиля ВТОРОГО участника
-vehicle_b_owner_name: ФИО владельца автомобиля ВТОРОГО участника
+vehicle_b_owner_name: ФИО владельца автомобиля ВТОРОГО участника. ПРИМЕЧАНИЕ: если current_group = vehicle_b_persons и это поле ещё не заполнено, то краткий ответ с ФИО (например, «Олег Олександрович Погребняк») относится к этому полю.
 vehicle_b_driver_name: ФИО водителя автомобиля ВТОРОГО участника
-vehicle_b_driver_license: номер ВУ водителя ВТОРОГО участника. Формат: XX XX YYYYYY, где XX — цифры, YY — цифры или буквы. Пример: 77 АА 123456 или 77 77 123456
+vehicle_b_driver_license: номер ВУ водителя ВТОРОГО участника. Формат: XX XX YYYYYY, где XX — цифры, YY — цифры или буквы. 
+Пример: 77 АА 123456 или 77 77 123456. ПРИМЕЧАНИЕ: если current_group = vehicle_b_persons, то краткий ответ без указания 
+участника (например, «77 77 654321») относится к этому полю.
 vehicle_b_insurer: страховая компания ВТОРОГО участника
-vehicle_b_policy_number: серия и номер полиса ОСАГО ВТОРОГО участника. Формат: ХХХ 0012345678
+vehicle_b_policy_number: серия и номер полиса ОСАГО ВТОРОГО участника. Формат: ХХХ 0012345678. 
+ПРИМЕЧАНИЕ: если current_group = vehicle_b_insurance, 
+то краткий ответ без указания участника (например, «ЕЕЕ 0987654321») относится к этому полю.
 vehicle_b_policy_expiry: срок действия полиса ОСАГО ВТОРОГО участника. Формат: С 15.05.2026 по 14.05.2027 включительно
 vehicle_b_impact_point: деталь первоначального удара на автомобиле ВТОРОГО участника
 vehicle_b_damage: повреждения автомобиля ВТОРОГО участника
@@ -322,6 +330,11 @@ _FIELD_EXTRACTION_PROMPT = """\
 - Для circumstances и scheme: извлекай ПОЛНЫЙ текст, не обрывай на полуслове.
 - Для signatures_confirmed: «да», «ок», «подпишем», «подписали» → true.
 - Для witnesses: «нет», «свидетелей нет» → сохрани строку "нет".
+- КРИТИЧЕСКИ ВАЖНО: ориентируйся на current_group при интерпретации кратких ответов.
+  Если current_group = vehicle_b_insurance, то краткий ответ типа «ЕЕЕ 0987654321»
+  относится к vehicle_b_policy_number (а не vehicle_a).
+  Если current_group = vehicle_b_persons, то краткий ответ типа «77 77 654321»
+  относится к vehicle_b_driver_license.
 - Верни ТОЛЬКО валидный JSON без пояснений и markdown.
 
 --- ПРИМЕРЫ ---
@@ -359,6 +372,29 @@ _FIELD_EXTRACTION_PROMPT = """\
 }}
 Пояснение: если vehicle_a_owner_name уже заполнен, vehicle_a_driver_name = то же значение.
 
+ПРИМЕР 3a — данные одного человека (водитель = владелец) для второго участника:
+Контекст: Текущая группа вопросов — vehicle_b_persons, vehicle_b_owner_name уже заполнен как «Олег Олександрович Погребняк»
+Сообщение: «водитель и владелец - один человек» или «тот же» или «такой же»
+Ответ: {{
+  "vehicle_b_driver_name": "Олег Олександрович Погребняк"
+}}
+Пояснение: если vehicle_b_owner_name уже заполнен и пользователь говорит, что водитель = владелец, скопируй значение из vehicle_b_owner_name в vehicle_b_driver_name.
+
+ПРИМЕР 3b — краткое ФИО для владельца второго участника (когда это ожидается):
+Контекст: Текущая группа вопросов — vehicle_b_persons, vehicle_b_owner_name ещё не заполнен
+Сообщение: «Олег Олександрович Погребняк»
+Ответ: {{
+  "vehicle_b_owner_name": "Олег Олександрович Погребняк"
+}}
+Пояснение: если текущая группа vehicle_b_persons и vehicle_b_owner_name ещё не заполнен, то краткий ответ с ФИО без дополнительных уточнений относится к vehicle_b_owner_name.
+ПРИМЕР 3c — повторное ФИО при вопросе о владельце второго участника:
+Контекст: Текущая группа вопросов — vehicle_b_persons, vehicle_b_owner_name ещё не заполнен, vehicle_b_driver_name уже заполнен (ошибочно или из-за путаницы)
+Сообщение: «Антонов Роман Сергеевич» (то же самое ФИО, что было введено ранее)
+Ответ: {{
+  "vehicle_b_owner_name": "Антонов Роман Сергеевич"
+}}
+Пояснение: если vehicle_b_owner_name ещё не заполнен, а пользователь вводит ФИО — это значение для vehicle_b_owner_name, даже если такое же ФИО уже было введено для vehicle_b_driver_name.
+
 ПРИМЕР 4 — водитель второго участника:
 Сообщение: «Второй участник: владелец Иванов И.И., водитель Петров П.П., права 12 34 567890»
 Ответ: {{
@@ -367,6 +403,22 @@ _FIELD_EXTRACTION_PROMPT = """\
   "vehicle_b_driver_license": "12 34 567890"
 }}
 Пояснение: для vehicle_b_* используй маркеры «второй», «другой», «его/её машина».
+
+ПРИМЕР 5 — краткий ответ для полиса ОСАГО второго участника (когда это ожидается):
+Контекст: Текущая группа вопросов — vehicle_b_insurance (запрашивают данные о страховке второго участника)
+Сообщение: «ЕЕЕ 0987654321»
+Ответ: {{
+  "vehicle_b_policy_number": "ЕЕЕ 0987654321"
+}}
+Пояснение: если текущая группа вопросов про vehicle_b_*, то краткий ответ без явного указания участника относится к vehicle_b.
+
+ПРИМЕР 6 — краткий ответ для водительского удостоверения второго участника:
+Контекст: Текущая группа вопросов — vehicle_b_persons (запрашивают данные о водителе второго участника)
+Сообщение: «77 77 654321»
+Ответ: {{
+  "vehicle_b_driver_license": "77 77 654321"
+}}
+Пояснение: смотри ПРИМЕР 5 — ориентир на текущую группу вопросов.
 
 --- КОНЕЦ ПРИМЕРОВ ---
 
@@ -705,6 +757,16 @@ def _get_current_group(collected: dict) -> str | None:
     """
     for group_id, config in FIELDS_CONFIG.items():
         keys = config["keys"]
+        # Если у группы строгий порядок заполнения (strict_order),
+        # проверяем по fill_order - группа остаётся текущей, пока не заполнено первое незаполненное поле
+        if config.get("strict_order") and "fill_order" in config:
+            fill_order = config["fill_order"]
+            for key in fill_order:
+                if not collected.get(key):
+                    return group_id
+            continue
+
+        # Обычная логика: группа считается незаполненной, если хотя бы один ключ не заполнен
         if not all(collected.get(k) for k in keys):
             return group_id
     return None
@@ -717,8 +779,9 @@ def _get_missing_key_in_group(collected: dict, group_id: str) -> str | None:
     config = FIELDS_CONFIG.get(group_id)
     if not config:
         return None
-    keys = config["keys"]
-    for key in keys:
+    key_order = config.get("fill_order", config["keys"])
+
+    for key in key_order:
         if not collected.get(key):
             return key
     return None
@@ -734,6 +797,52 @@ def _extract_fields_llm(
     # Если владелец уже заполнен, а водитель нет — добавляем подсказку в filled
     # чтобы LLM мог применить правило «водитель = владелец» из примера 3
     display_existing = dict(existing_clean)
+
+    # СПЕЦИАЛЬНАЯ ОБРАБОТКА: если пользователь пишет "водитель и владелец - один человек"
+    # и текущая группа vehicle_b_persons, и vehicle_b_owner_name уже заполнен,
+    # то сразу копируем значение в vehicle_b_driver_name
+    message_lower = message.lower().strip()
+    if (
+            current_group == "vehicle_b_persons"
+            and "vehicle_b_owner_name" in existing_clean
+            and "vehicle_b_driver_name" not in existing_clean
+            and any(phrase in message_lower for phrase in [
+        "водитель и владелец",
+        "водитель = владелец",
+        "водитель-владелец",
+        "один человек",
+        "тот же",
+        "такой же",
+        "владелец и водитель",
+    ])
+    ):
+        return {"vehicle_b_driver_name": existing_clean["vehicle_b_owner_name"]}
+
+    # ОБРАБОТКА СЛУЧАЯ 1: если в группе vehicle_b_persons owner ещё не заполнен,
+    # но driver уже заполнен (например, из-за ошибки порядка), и пользователь
+    # вводит ФИО снова — считаем, что это владелец
+    if (
+            current_group == "vehicle_b_persons"
+            and "vehicle_b_owner_name" not in existing_clean
+            and "vehicle_b_driver_name" in existing_clean
+    ):
+        # Проверяем, похоже ли сообщение на ФИО (есть пробелы, длина > 5 символов)
+        is_fio_like = len(message.strip()) > 5 and " " in message.strip()
+        if is_fio_like:
+            return {"vehicle_b_owner_name": message.strip()}
+
+    # ОБРАБОТКА СЛУЧАЯ 2: если в группе vehicle_b_persons owner ещё не заполнен,
+    # driver ещё не заполнен, и пользователь вводит ФИО — это владелец
+    # (чтобы избежать путаницы, когда LLM может ошибочно записать ФИО в driver)
+    if (
+            current_group == "vehicle_b_persons"
+            and "vehicle_b_owner_name" not in existing_clean
+            and "vehicle_b_driver_name" not in existing_clean
+    ):
+        # Проверяем, похоже ли сообщение на ФИО (есть пробелы, длина > 5 символов)
+        is_fio_like = len(message.strip()) > 5 and " " in message.strip()
+        if is_fio_like:
+            return {"vehicle_b_owner_name": message.strip()}
 
     filled_str = (
         "\n".join(f"  {k}: {v}" for k, v in display_existing.items())
