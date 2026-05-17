@@ -2,10 +2,13 @@
 Step 2: Пошаговое заполнение Европротокола.
 
 Изменения vs предыдущей версии:
-  - _FLAT_KEYS_DESCRIPTION: добавлена явная разметка vehicle_a = пользователь,
-    vehicle_b = второй участник — устраняет крос-контаминацию полей
-  - _FIELD_EXTRACTION_PROMPT: добавлены few-shot примеры разделения участников
-    и правило не обрывать circumstances/scheme на полуслове
+  - _PENDING_OVERWRITE_KEY: подтверждение перезаписи уже заполненного поля
+  - _extract_single_text_field: отдельный plain-text LLM-вызов для длинных
+    текстовых полей (circumstances, scheme, повреждения) — исключает обрезание
+    в JSON-режиме
+  - process_step2_with_llm: ШАГ 4 — fallback на single-field вызов,
+    ШАГ 6 — обработка конфликтов перезаписи
+  - _FLAT_KEYS_DESCRIPTION: исправлен формат ВУ (цифры или буквы)
   - _build_final_data: возвращает плоский dict вместо вложенного —
     структура совпадает с collected_fields, бэкенд сам группирует для PDF
 """
@@ -28,10 +31,14 @@ LIMIT_WITH_APP_NO_DISAGREEMENT = 400_000
 LIMIT_WITH_APP_DISAGREEMENT = 200_000
 
 # ---------------------------------------------------------------------------
-# Служебный ключ для хранения ожидающей подтверждения реформулировки
+# Служебные ключи
 # ---------------------------------------------------------------------------
 
+# Хранит ожидающую подтверждения реформулировку текстового поля
 _PENDING_KEY = "_pending_reformulation"
+
+# Хранит ожидающую подтверждения перезапись уже заполненного поля
+_PENDING_OVERWRITE_KEY = "_pending_overwrite"
 
 # ---------------------------------------------------------------------------
 # Поля, требующие реформулировки перед сохранением
@@ -137,7 +144,6 @@ FIELDS_CONFIG: dict[str, dict] = {
             "vehicle_a_driver_name": "Укажите ФИО водителя вашего автомобиля.\nПример: Иванов Иван Иванович",
             "vehicle_a_driver_license": "Укажите номер вашего водительского удостоверения.\nПример: 77 77 123456",
         },
-
     },
     "vehicle_a_insurance": {
         "prompt": "Ваша страховая компания, серия и номер полиса ОСАГО, дата окончания.",
@@ -183,9 +189,7 @@ FIELDS_CONFIG: dict[str, dict] = {
             "vehicle_b_driver_name": "Укажите ФИО водителя автомобиля второго участника.\nПример: Петров Пётр Петрович",
             "vehicle_b_driver_license": "Укажите номер водительского удостоверения водителя второго участника.\nПример: 77 77 654321",
         },
-        # Порядок заполнения: сначала владелец, потом водитель, потом права
         "fill_order": ["vehicle_b_owner_name", "vehicle_b_driver_name", "vehicle_b_driver_license"],
-        # ВАЖНО: заполняем поля строго по порядку fill_order
         "strict_order": True,
     },
     "vehicle_b_insurance": {
@@ -193,10 +197,9 @@ FIELDS_CONFIG: dict[str, dict] = {
         "instruction": "Пример: СОГАЗ, ЕЕЕ 0987654321, действует до 30.06.2025",
         "keys": ["vehicle_b_insurer", "vehicle_b_policy_number", "vehicle_b_policy_expiry"],
         "key_prompts": {
-            "vehicle_b_insurer": "Укажите страховую второго участника .\nПример: СОГАЗ, СберСтрахование",
+            "vehicle_b_insurer": "Укажите страховую второго участника.\nПример: СОГАЗ, СберСтрахование",
             "vehicle_b_policy_number": "Укажите серию и номер полиса ОСАГО второго участника.\nПример: ЕЕЕ 0987654321",
-            "vehicle_b_policy_expiry": "Укажите сроки действия полиса ОСАГО второго участника.\nПример: действует до 30.06.2025",
-
+            "vehicle_b_policy_expiry": "Укажите срок действия полиса ОСАГО второго участника.\nПример: действует до 30.06.2025",
         },
     },
     "vehicle_b_damage": {
@@ -249,8 +252,7 @@ FIELDS_CONFIG: dict[str, dict] = {
 FIELDS_ORDER: list[str] = list(FIELDS_CONFIG.keys())
 
 # ---------------------------------------------------------------------------
-# Описание полей для промпта извлечения
-# ИСПРАВЛЕНО: добавлена явная разметка участников A и B
+# Описание полей для JSON-промпта извлечения
 # ---------------------------------------------------------------------------
 
 _FLAT_KEYS_DESCRIPTION = """
@@ -278,7 +280,7 @@ vehicle_a_driver_name: ФИО водителя автомобиля ПОЛЬЗО
 vehicle_a_driver_license: номер ВУ водителя автомобиля ПОЛЬЗОВАТЕЛЯ. Формат: XX XX YYYYYY, где XX — цифры, YY — цифры или буквы. Пример: 77 АА 123456 или 77 77 123456
 vehicle_a_insurer: страховая компания автомобиля ПОЛЬЗОВАТЕЛЯ
 vehicle_a_policy_number: серия и номер полиса ОСАГО автомобиля ПОЛЬЗОВАТЕЛЯ. Формат: ХХХ 0012345678
-vehicle_a_policy_expiry: срок действия полиса ОСАГО автомобиля ПОЛЬЗОВАТЕЛЯ. Формат: С 15.05.2026 по 14.05.2027 включительно
+vehicle_a_policy_expiry: срок действия полиса ОСАГО автомобиля ПОЛЬЗОВАТЕЛЯ. Пример: действует до 31.12.2025
 vehicle_a_impact_point: деталь первоначального удара на автомобиле ПОЛЬЗОВАТЕЛЯ
 vehicle_a_damage: повреждения автомобиля ПОЛЬЗОВАТЕЛЯ
 vehicle_a_fault: вина водителя ПОЛЬЗОВАТЕЛЯ ("виноват" / "не виноват")
@@ -287,14 +289,10 @@ vehicle_b_make_model: марка и модель автомобиля ВТОРО
 vehicle_b_reg_number: государственный номер автомобиля ВТОРОГО участника
 vehicle_b_owner_name: ФИО владельца автомобиля ВТОРОГО участника. ПРИМЕЧАНИЕ: если current_group = vehicle_b_persons и это поле ещё не заполнено, то краткий ответ с ФИО (например, «Олег Олександрович Погребняк») относится к этому полю.
 vehicle_b_driver_name: ФИО водителя автомобиля ВТОРОГО участника
-vehicle_b_driver_license: номер ВУ водителя ВТОРОГО участника. Формат: XX XX YYYYYY, где XX — цифры, YY — цифры или буквы. 
-Пример: 77 АА 123456 или 77 77 123456. ПРИМЕЧАНИЕ: если current_group = vehicle_b_persons, то краткий ответ без указания 
-участника (например, «77 77 654321») относится к этому полю.
+vehicle_b_driver_license: номер ВУ водителя ВТОРОГО участника. Формат: XX XX YYYYYY, где XX — цифры, YY — цифры или буквы. Пример: 77 АА 123456 или 77 77 123456. ПРИМЕЧАНИЕ: если current_group = vehicle_b_persons, то краткий ответ без указания участника (например, «77 77 654321») относится к этому полю.
 vehicle_b_insurer: страховая компания ВТОРОГО участника
-vehicle_b_policy_number: серия и номер полиса ОСАГО ВТОРОГО участника. Формат: ХХХ 0012345678. 
-ПРИМЕЧАНИЕ: если current_group = vehicle_b_insurance, 
-то краткий ответ без указания участника (например, «ЕЕЕ 0987654321») относится к этому полю.
-vehicle_b_policy_expiry: срок действия полиса ОСАГО ВТОРОГО участника. Формат: С 15.05.2026 по 14.05.2027 включительно
+vehicle_b_policy_number: серия и номер полиса ОСАГО ВТОРОГО участника. Формат: ХХХ 0012345678. ПРИМЕЧАНИЕ: если current_group = vehicle_b_insurance, то краткий ответ без указания участника (например, «ЕЕЕ 0987654321») относится к этому полю.
+vehicle_b_policy_expiry: срок действия полиса ОСАГО ВТОРОГО участника. Пример: действует до 30.06.2025. ПРИМЕЧАНИЕ: если current_group = vehicle_b_insurance, то краткий ответ с датой или фразой «действует до ...» относится к этому полю.
 vehicle_b_impact_point: деталь первоначального удара на автомобиле ВТОРОГО участника
 vehicle_b_damage: повреждения автомобиля ВТОРОГО участника
 vehicle_b_fault: вина водителя ВТОРОГО участника ("виноват" / "не виноват")
@@ -306,8 +304,7 @@ signatures_confirmed: оба водителя готовы подписать (t
 """
 
 # ---------------------------------------------------------------------------
-# Промпт извлечения полей
-# ИСПРАВЛЕНО: few-shot примеры разделения участников + правило не обрывать текст
+# Промпт JSON-извлечения полей
 # ---------------------------------------------------------------------------
 
 _FIELD_EXTRACTION_PROMPT = """\
@@ -320,7 +317,8 @@ _FIELD_EXTRACTION_PROMPT = """\
 {filled_fields}
 
 Текущая группа вопросов (что ожидается в первую очередь): {current_group}
-Ключи этой группы: {current_keys}
+Первоочередное ожидаемое поле (краткий ответ пользователя скорее всего относится к нему): {current_key}
+Все ключи группы: {current_keys}
 
 Правила:
 - Если сообщение содержит данные для ключей текущей группы — обязательно извлеки.
@@ -328,114 +326,121 @@ _FIELD_EXTRACTION_PROMPT = """\
 - Не перезаписывай уже заполненные поля.
 - Если данных для поля нет — не включай ключ в ответ.
 - Для circumstances и scheme: извлекай ПОЛНЫЙ текст, не обрывай на полуслове.
-  КРИТИЧЕСКИ ВАЖНО для circumstances и scheme:
-  1. Если есть маркеры «Обстоятельства:» и/или «Схема:» — извлекай весь текст после маркера до следующего маркера или конца сообщения.
-  2. Если маркеров НЕТ — определяй по смыслу:
-     • circumstances = описание манёвров, действий водителей, столкновения (кто куда ехал, что делал, как ударил)
-     • scheme = описание взаимного положения ТС, направлений движения, расположения на дороге
-     • Разделителем часто служит пустая строка между абзацами
-     • Первое предложение/абзац обычно обстоятельства, второе — схема
-  3. НИКОГДА не обрывай текст на середине предложения.
 - Для signatures_confirmed: «да», «ок», «подпишем», «подписали» → true.
 - Для witnesses: «нет», «свидетелей нет» → сохрани строку "нет".
-- КРИТИЧЕСКИ ВАЖНО: ориентируйся на current_group при интерпретации кратких ответов.
-  Если current_group = vehicle_b_insurance, то краткий ответ типа «ЕЕЕ 0987654321»
-  относится к vehicle_b_policy_number (а не vehicle_a).
-  Если current_group = vehicle_b_persons, то краткий ответ типа «77 77 654321»
-  относится к vehicle_b_driver_license.
+- КРИТИЧЕСКИ ВАЖНО: ориентируйся на current_key при интерпретации кратких ответов.
+  Если current_key = vehicle_b_policy_number, то краткий ответ «ЕЕЕ 0987654321»
+  относится именно к vehicle_b_policy_number.
+  Если current_key = vehicle_b_policy_expiry, то краткий ответ «действует до 30.06.2025»
+  относится именно к vehicle_b_policy_expiry.
+  Если current_key = vehicle_b_driver_license, то краткий ответ «77 77 654321»
+  относится именно к vehicle_b_driver_license.
 - Верни ТОЛЬКО валидный JSON без пояснений и markdown.
 
---- ПРИМЕРЫ (ВНИМАТЕЛЬНО ИЗУЧИ ПЕРЕД ОТВЕТОМ) ---
+--- ПРИМЕРЫ ---
 
-ПРИМЕР 2 — обстоятельства и схема с маркерами:
-Сообщение: «Обстоятельства: я ехал прямо по правой полосе, второй участник выезжал задним ходом
-            с парковки справа и въехал в мой передний бампер. Виноват водитель Б, я не виноват.
-
-            Схема: моя Toyota двигалась прямо на север, Kia выезжала задним ходом с парковки
-            справа и ударила меня спереди.»
+ПРИМЕР 1 — разделение участников (самое важное):
+Сообщение: «Я на Toyota Camry А111БВ77, страховая Росгосстрах, полис ХХХ 0001
+            до 31.12.2025. Второй — Kia Rio В222ГД77, страховая СОГАЗ,
+            полис ЕЕЕ 0002 до 30.06.2025. Я не виноват, виноват второй.»
 Ответ: {{
-  "circumstances": "я ехал прямо по правой полосе, второй участник выезжал задним ходом с парковки справа и въехал в мой передний бампер. Виноват водитель Б, я не виноват.",
-  "scheme": "моя Toyota двигалась прямо на север, Kia выезжала задним ходом с парковки справа и ударила меня спереди."
+  "vehicle_a_make_model": "Toyota Camry",
+  "vehicle_a_reg_number": "А111БВ77",
+  "vehicle_a_insurer": "Росгосстрах",
+  "vehicle_a_policy_number": "ХХХ 0001",
+  "vehicle_a_policy_expiry": "31.12.2025",
+  "vehicle_a_fault": "не виноват",
+  "vehicle_b_make_model": "Kia Rio",
+  "vehicle_b_reg_number": "В222ГД77",
+  "vehicle_b_insurer": "СОГАЗ",
+  "vehicle_b_policy_number": "ЕЕЕ 0002",
+  "vehicle_b_policy_expiry": "30.06.2025",
+  "vehicle_b_fault": "виноват"
 }}
 
-ПРИМЕР 3 — обстоятельства и схема БЕЗ маркеров (разделять по пустой строке и смыслу):
-Сообщение: «я ехал прямо по правой полосе, второй участник выезжал задним ходом
-            с парковки справа и въехал в мой передний бампер. Виноват водитель Б, я не виноват.
+ПРИМЕР 2 — краткий ответ для vehicle_b_policy_expiry:
+current_key = vehicle_b_policy_expiry
+Сообщение: «действует до 30.06.2025»
+Ответ: {{"vehicle_b_policy_expiry": "действует до 30.06.2025"}}
 
-            моя Toyota двигалась прямо на север, Kia выезжала задним ходом с парковки
-            справа и ударила меня спереди.»
-Ответ: {{
-  "circumstances": "я ехал прямо по правой полосе, второй участник выезжал задним ходом с парковки справа и въехал в мой передний бампер. Виноват водитель Б, я не виноват.",
-  "scheme": "моя Toyota двигалась прямо на север, Kia выезжала задним ходом с парковки справа и ударила меня спереди."
-}}
-Пояснение: первый абзац — обстоятельства (манёвры, столкновение), второй — схема (положение ТС, направления).
-
-ПРИМЕР 4 — только обстоятельства:
-Сообщение: «Обстоятельства: я ехал прямо по правой полосе,
-            второй выезжал задним ходом и въехал в мой бампер.»
-Ответ: {{
-  "circumstances": "я ехал прямо по правой полосе, второй выезжал задним ходом и въехал в мой бампер."
-}}
-
-ПРИМЕР 5 — данные одного человека (водитель = владелец):
+ПРИМЕР 3 — данные одного человека (водитель = владелец):
 Сообщение: «Водитель и владелец — один человек»
-Ответ: {{
-  "vehicle_a_driver_name": "<значение vehicle_a_owner_name из уже заполненных полей>"
-}}
-Пояснение: если vehicle_a_owner_name уже заполнен, vehicle_a_driver_name = то же значение.
+Ответ: {{"vehicle_a_driver_name": "<значение vehicle_a_owner_name из уже заполненных полей>"}}
 
-ПРИМЕР 5a — данные одного человека (водитель = владелец) для второго участника:
-Контекст: Текущая группа вопросов — vehicle_b_persons, vehicle_b_owner_name уже заполнен как «Олег Олександрович Погребняк»
-Сообщение: «водитель и владелец - один человек» или «тот же» или «такой же»
-Ответ: {{
-  "vehicle_b_driver_name": "Олег Олександрович Погребняк"
-}}
-Пояснение: если vehicle_b_owner_name уже заполнен и пользователь говорит, что водитель = владелец, скопируй значение из vehicle_b_owner_name в vehicle_b_driver_name.
+ПРИМЕР 3a — данные одного человека для второго участника:
+Контекст: vehicle_b_owner_name = «Олег Олександрович Погребняк»
+Сообщение: «водитель и владелец - один человек»
+Ответ: {{"vehicle_b_driver_name": "Олег Олександрович Погребняк"}}
 
-ПРИМЕР 5b — краткое ФИО для владельца второго участника (когда это ожидается):
-Контекст: Текущая группа вопросов — vehicle_b_persons, vehicle_b_owner_name ещё не заполнен
+ПРИМЕР 3b — краткое ФИО для владельца второго участника:
+current_group = vehicle_b_persons, vehicle_b_owner_name не заполнен
 Сообщение: «Олег Олександрович Погребняк»
-Ответ: {{
-  "vehicle_b_owner_name": "Олег Олександрович Погребняк"
-}}
-Пояснение: если текущая группа vehicle_b_persons и vehicle_b_owner_name ещё не заполнен, то краткий ответ с ФИО без дополнительных уточнений относится к vehicle_b_owner_name.
-ПРИМЕР 5c — повторное ФИО при вопросе о владельце второго участника:
-Контекст: Текущая группа вопросов — vehicle_b_persons, vehicle_b_owner_name ещё не заполнен, vehicle_b_driver_name уже заполнен (ошибочно или из-за путаницы)
-Сообщение: «Антонов Роман Сергеевич» (то же самое ФИО, что было введено ранее)
-Ответ: {{
-  "vehicle_b_owner_name": "Антонов Роман Сергеевич"
-}}
-Пояснение: если vehicle_b_owner_name ещё не заполнен, а пользователь вводит ФИО — это значение для vehicle_b_owner_name, даже если такое же ФИО уже было введено для vehicle_b_driver_name.
+Ответ: {{"vehicle_b_owner_name": "Олег Олександрович Погребняк"}}
 
-ПРИМЕР 6 — водитель второго участника:
+ПРИМЕР 4 — водитель второго участника:
 Сообщение: «Второй участник: владелец Иванов И.И., водитель Петров П.П., права 12 34 567890»
 Ответ: {{
   "vehicle_b_owner_name": "Иванов И.И.",
   "vehicle_b_driver_name": "Петров П.П.",
   "vehicle_b_driver_license": "12 34 567890"
 }}
-Пояснение: для vehicle_b_* используй маркеры «второй», «другой», «его/её машина».
 
-ПРИМЕР 7 — краткий ответ для полиса ОСАГО второго участника (когда это ожидается):
-Контекст: Текущая группа вопросов — vehicle_b_insurance (запрашивают данные о страховке второго участника)
+ПРИМЕР 5 — краткий ответ для полиса ОСАГО второго участника:
+current_key = vehicle_b_policy_number
 Сообщение: «ЕЕЕ 0987654321»
-Ответ: {{
-  "vehicle_b_policy_number": "ЕЕЕ 0987654321"
-}}
-Пояснение: если текущая группа вопросов про vehicle_b_*, то краткий ответ без явного указания участника относится к vehicle_b.
+Ответ: {{"vehicle_b_policy_number": "ЕЕЕ 0987654321"}}
 
-ПРИМЕР 8 — краткий ответ для водительского удостоверения второго участника:
-Контекст: Текущая группа вопросов — vehicle_b_persons (запрашивают данные о водителе второго участника)
+ПРИМЕР 6 — краткий ответ для ВУ второго участника:
+current_key = vehicle_b_driver_license
 Сообщение: «77 77 654321»
-Ответ: {{
-  "vehicle_b_driver_license": "77 77 654321"
-}}
-Пояснение: смотри ПРИМЕР 7 — ориентир на текущую группу вопросов.
+Ответ: {{"vehicle_b_driver_license": "77 77 654321"}}
 
 --- КОНЕЦ ПРИМЕРОВ ---
 
 Сообщение пользователя: "{message}"
 """
+
+# ---------------------------------------------------------------------------
+# Промпт и описания для single-field plain-text извлечения
+# ---------------------------------------------------------------------------
+
+_SINGLE_FIELD_EXTRACT_PROMPT = """\
+Пользователь описал ситуацию ДТП. Твоя задача — извлечь из его сообщения \
+информацию для одного конкретного поля Европротокола.
+
+Поле: {field_description}
+
+Правила:
+- Сохрани ВСЕ детали из сообщения, которые относятся к этому полю
+- Не обрывай текст на полуслове — передай полностью
+- Не добавляй ничего от себя, не перефразируй — только извлекай
+- Если информация для этого поля в сообщении явно отсутствует — ответь только: НЕТ
+- Отвечай только извлечённым текстом, без пояснений, кавычек и markdown
+
+Сообщение пользователя:
+{message}
+"""
+
+_TEXT_FIELD_DESCRIPTIONS: dict[str, str] = {
+    "circumstances": (
+        "Обстоятельства ДТП (пункт 11 / оборотная сторона пункт 15): "
+        "кто куда двигался, какие манёвры выполнял, как произошло столкновение"
+    ),
+    "scheme": (
+        "Схема ДТП (пункт 12): взаимное расположение автомобилей, "
+        "направления движения, положение на дороге"
+    ),
+    "vehicle_a_damage": (
+        "Перечень видимых повреждений автомобиля А (пользователя): "
+        "конкретные детали и характер повреждений"
+    ),
+    "vehicle_b_damage": (
+        "Перечень видимых повреждений автомобиля Б (второго участника): "
+        "конкретные детали и характер повреждений"
+    ),
+}
+
+_EXTRACT_NOT_FOUND = "нет"
 
 
 # ---------------------------------------------------------------------------
@@ -667,7 +672,6 @@ def _handle_reformulation_response(
             "Это может затруднить обработку страховой компанией."
         )
     elif not q:
-        # Пустой ввод — просим повторить, не сохраняем
         field_desc = _FIELD_DESCRIPTIONS_FOR_REFORMULATION.get(field, field)
         return StepResponse(
             answer=(
@@ -719,43 +723,105 @@ def _handle_reformulation_response(
     return _continue_after_save(collected_fields, prefix)
 
 
-def _continue_after_save(collected_fields: dict, prefix: str = "") -> StepResponse:
-    current_group = _get_current_group(collected_fields)
+# ---------------------------------------------------------------------------
+# Подтверждение перезаписи уже заполненного поля
+# ---------------------------------------------------------------------------
 
-    if current_group is None:
-        final_json = {
-            "type": "europrotocol",
-            "status": "ready_for_pdf",
-            "data": _build_final_data(collected_fields),
+def _handle_overwrite_response(
+    query: str,
+    collected_fields: dict,
+    pending: dict,
+) -> StepResponse:
+    """
+    Обрабатывает ответ пользователя на запрос подтверждения перезаписи поля.
+    pending = {
+        "field": str,
+        "old_value": ...,
+        "new_value": ...,
+        "remaining": [{"field": ..., "old_value": ..., "new_value": ...}, ...]
+    }
+    """
+    q = query.strip().lower().rstrip("!.,?")
+    field = pending["field"]
+    remaining: list = pending.get("remaining", [])
+
+    if q in _APPROVAL_PHRASES:
+        collected_fields[field] = pending["new_value"]
+        save_note = "Поле обновлено."
+    else:
+        save_note = "Поле оставлено без изменений."
+
+    collected_fields.pop(_PENDING_OVERWRITE_KEY, None)
+
+    # Если есть ещё конфликты — показываем следующий
+    if remaining:
+        next_ow = remaining[0]
+        rest = remaining[1:]
+        collected_fields[_PENDING_OVERWRITE_KEY] = {
+            "field": next_ow["field"],
+            "old_value": next_ow["old_value"],
+            "new_value": next_ow["new_value"],
+            "remaining": rest,
         }
         return StepResponse(
             answer=(
-                prefix
-                + "✅ Все данные собраны! Направьте извещение в страховую компанию "
-                "в течение 5 рабочих дней. Данные переданы для формирования PDF."
+                f"{save_note}\n\n"
+                f"Поле «{next_ow['field']}» уже содержит:\n"
+                f"«{next_ow['old_value']}»\n\n"
+                f"Заменить на:\n«{next_ow['new_value']}»?\n\n"
+                f"Напишите «да» для подтверждения или «нет» для отмены."
             ),
-            step_completed=True,
-            next_step=Step.DONE,
+            step_completed=False,
+            next_step=Step.STEP2,
             collected_fields=collected_fields,
-            final_json=final_json,
         )
 
-    config = FIELDS_CONFIG[current_group]
-    # Получаем первый незаполненный ключ в текущей группе
-    missing_key = _get_missing_key_in_group(collected_fields, current_group)
+    return _continue_after_save(collected_fields, save_note + "\n\n")
 
-    key_prompts = config.get("key_prompts", {})
-    if missing_key and missing_key in key_prompts:
-        question = key_prompts[missing_key]
-    else:
-        question = f"{config['instruction']}\n\n{config['prompt']}"
 
-    return StepResponse(
-        answer=prefix + question,
-        step_completed=False,
-        next_step=Step.STEP2,
-        collected_fields=collected_fields,
+# ---------------------------------------------------------------------------
+# Single-field plain-text извлечение
+# ---------------------------------------------------------------------------
+
+def _extract_single_text_field(
+    giga: GigaChat,
+    field: str,
+    message: str,
+) -> str | None:
+    """
+    Отдельный LLM-вызов для извлечения одного текстового поля в plain-text режиме.
+    Исключает проблему обрезания текста в JSON-режиме.
+    Возвращает None если поле в сообщении не найдено.
+    """
+    description = _TEXT_FIELD_DESCRIPTIONS.get(field, field)
+    prompt = _SINGLE_FIELD_EXTRACT_PROMPT.format(
+        field_description=description,
+        message=message,
     )
+    try:
+        payload = Chat(
+            messages=[
+                Messages(
+                    role=MessagesRole.SYSTEM,
+                    content=(
+                        "Ты — экстрактор данных для Европротокола о ДТП. "
+                        "Извлекай только запрошенную информацию полностью, ничего не сокращай."
+                    ),
+                ),
+                Messages(role=MessagesRole.USER, content=prompt),
+            ],
+            temperature=0.0,
+        )
+        response = giga.chat(payload)
+        result = response.choices[0].message.content.strip()
+
+        if not result or result.lower() == _EXTRACT_NOT_FOUND or len(result) < 5:
+            return None
+        return result
+
+    except Exception as e:
+        print(f"[step2] single field extraction error for '{field}': {e}")
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -769,34 +835,30 @@ def _get_current_group(collected: dict) -> str | None:
     """
     for group_id, config in FIELDS_CONFIG.items():
         keys = config["keys"]
-        # Если у группы строгий порядок заполнения (strict_order),
-        # проверяем по fill_order - группа остаётся текущей, пока не заполнено первое незаполненное поле
         if config.get("strict_order") and "fill_order" in config:
             fill_order = config["fill_order"]
             for key in fill_order:
                 if not collected.get(key):
                     return group_id
             continue
-
-        # Обычная логика: группа считается незаполненной, если хотя бы один ключ не заполнен
         if not all(collected.get(k) for k in keys):
             return group_id
     return None
 
+
 def _get_missing_key_in_group(collected: dict, group_id: str) -> str | None:
     """
     Возвращает первый незаполненный ключ в указанной группе.
-    Порядок определяется порядком ключей в конфиге.
     """
     config = FIELDS_CONFIG.get(group_id)
     if not config:
         return None
     key_order = config.get("fill_order", config["keys"])
-
     for key in key_order:
         if not collected.get(key):
             return key
     return None
+
 
 def _extract_fields_llm(
         giga: GigaChat,
@@ -804,15 +866,14 @@ def _extract_fields_llm(
         existing: dict,
         current_group: str = "",
 ) -> dict:
-    existing_clean = {k: v for k, v in existing.items() if k != _PENDING_KEY}
+    existing_clean = {k: v for k, v in existing.items() if k != _PENDING_KEY and k != _PENDING_OVERWRITE_KEY}
 
-    # Если владелец уже заполнен, а водитель нет — добавляем подсказку в filled
-    # чтобы LLM мог применить правило «водитель = владелец» из примера 3
     display_existing = dict(existing_clean)
 
-    # СПЕЦИАЛЬНАЯ ОБРАБОТКА: если пользователь пишет "водитель и владелец - один человек"
-    # и текущая группа vehicle_b_persons, и vehicle_b_owner_name уже заполнен,
-    # то сразу копируем значение в vehicle_b_driver_name
+    # Вычисляем current_key для передачи в промпт
+    current_key = _get_missing_key_in_group(existing_clean, current_group) or "" if current_group else ""
+
+    # СПЕЦИАЛЬНАЯ ОБРАБОТКА: водитель = владелец для vehicle_b_persons
     message_lower = message.lower().strip()
     if (
             current_group == "vehicle_b_persons"
@@ -830,28 +891,22 @@ def _extract_fields_llm(
     ):
         return {"vehicle_b_driver_name": existing_clean["vehicle_b_owner_name"]}
 
-    # ОБРАБОТКА СЛУЧАЯ 1: если в группе vehicle_b_persons owner ещё не заполнен,
-    # но driver уже заполнен (например, из-за ошибки порядка), и пользователь
-    # вводит ФИО снова — считаем, что это владелец
+    # ОБРАБОТКА: vehicle_b_owner_name ещё не заполнен, driver уже заполнен
     if (
             current_group == "vehicle_b_persons"
             and "vehicle_b_owner_name" not in existing_clean
             and "vehicle_b_driver_name" in existing_clean
     ):
-        # Проверяем, похоже ли сообщение на ФИО (есть пробелы, длина > 5 символов)
         is_fio_like = len(message.strip()) > 5 and " " in message.strip()
         if is_fio_like:
             return {"vehicle_b_owner_name": message.strip()}
 
-    # ОБРАБОТКА СЛУЧАЯ 2: если в группе vehicle_b_persons owner ещё не заполнен,
-    # driver ещё не заполнен, и пользователь вводит ФИО — это владелец
-    # (чтобы избежать путаницы, когда LLM может ошибочно записать ФИО в driver)
+    # ОБРАБОТКА: оба не заполнены — первый ввод ФИО → владелец
     if (
             current_group == "vehicle_b_persons"
             and "vehicle_b_owner_name" not in existing_clean
             and "vehicle_b_driver_name" not in existing_clean
     ):
-        # Проверяем, похоже ли сообщение на ФИО (есть пробелы, длина > 5 символов)
         is_fio_like = len(message.strip()) > 5 and " " in message.strip()
         if is_fio_like:
             return {"vehicle_b_owner_name": message.strip()}
@@ -869,6 +924,7 @@ def _extract_fields_llm(
         keys_description=_FLAT_KEYS_DESCRIPTION,
         filled_fields=filled_str,
         current_group=current_group or "не определена",
+        current_key=current_key or "—",
         current_keys=current_keys or "—",
         message=message,
     )
@@ -947,11 +1003,47 @@ def _map_slots_to_fields(giga: GigaChat, slots: dict, history: list) -> dict:
 def _build_final_data(fields: dict) -> dict:
     """
     Возвращает плоский dict collected_fields без служебных ключей.
-    Структура совпадает с тем, что накапливалось в collected_fields —
-    бэкенд сам решает как сгруппировать поля для PDF-генератора.
     """
-    skip = {_PENDING_KEY}
+    skip = {_PENDING_KEY, _PENDING_OVERWRITE_KEY}
     return {k: v for k, v in fields.items() if k not in skip}
+
+
+def _continue_after_save(collected_fields: dict, prefix: str = "") -> StepResponse:
+    current_group = _get_current_group(collected_fields)
+
+    if current_group is None:
+        final_json = {
+            "type": "europrotocol",
+            "status": "ready_for_pdf",
+            "data": _build_final_data(collected_fields),
+        }
+        return StepResponse(
+            answer=(
+                prefix
+                + "✅ Все данные собраны! Направьте извещение в страховую компанию "
+                "в течение 5 рабочих дней. Данные переданы для формирования PDF."
+            ),
+            step_completed=True,
+            next_step=Step.DONE,
+            collected_fields=collected_fields,
+            final_json=final_json,
+        )
+
+    config = FIELDS_CONFIG[current_group]
+    missing_key = _get_missing_key_in_group(collected_fields, current_group)
+
+    key_prompts = config.get("key_prompts", {})
+    if missing_key and missing_key in key_prompts:
+        question = key_prompts[missing_key]
+    else:
+        question = f"{config['instruction']}\n\n{config['prompt']}"
+
+    return StepResponse(
+        answer=prefix + question,
+        step_completed=False,
+        next_step=Step.STEP2,
+        collected_fields=collected_fields,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -965,18 +1057,28 @@ def process_step2_with_llm(
         slots: dict,
         collected_fields: dict,
 ) -> StepResponse:
-    # ШАГ 1: ожидаем ответа на реформулировку
+
+    # ШАГ 1a: ожидаем ответа на реформулировку
     pending = collected_fields.get(_PENDING_KEY)
     if pending:
         return _handle_reformulation_response(giga, query, collected_fields, pending)
+
+    # ШАГ 1b: ожидаем подтверждения перезаписи
+    pending_ow = collected_fields.get(_PENDING_OVERWRITE_KEY)
+    if pending_ow:
+        return _handle_overwrite_response(query, collected_fields, pending_ow)
 
     # ШАГ 2: prefill из истории step1 при первом входе
     if not collected_fields:
         collected_fields = _map_slots_to_fields(giga, slots, history)
 
     current_group = _get_current_group(collected_fields)
+    current_key = (
+        _get_missing_key_in_group(collected_fields, current_group)
+        if current_group else ""
+    ) or ""
 
-    # ШАГ 3: извлечение данных
+    # ШАГ 3: JSON-извлечение (структурные поля)
     had_error = False
     try:
         new_data = _extract_fields_llm(giga, query, collected_fields, current_group or "")
@@ -985,21 +1087,42 @@ def process_step2_with_llm(
         new_data = {}
         had_error = True
 
+    # ШАГ 4: для текстовых полей — отдельный plain-text вызов
+    # если JSON вернул пустое значение или заметно обрезанное
+    for field in _TEXT_FIELD_DESCRIPTIONS:
+        if collected_fields.get(field):
+            # уже заполнено — перезапись обрабатывается ниже через overwrite
+            continue
+
+        json_value = new_data.get(field)
+
+        # Считаем значение обрезанным если оно заметно короче сообщения
+        # и не заканчивается на знак препинания
+        is_truncated = (
+            json_value
+            and isinstance(json_value, str)
+            and len(json_value) < len(query) * 0.4
+            and not json_value.rstrip().endswith((".", "!", "?"))
+        )
+
+        if not json_value or is_truncated:
+            extracted = _extract_single_text_field(giga, field, query)
+            if extracted:
+                new_data[field] = extracted
+                print(f"[step2] single-field extraction used for '{field}'")
+
     if not new_data:
         if current_group is None:
             return _continue_after_save(collected_fields)
 
         if had_error:
             config = FIELDS_CONFIG[current_group]
-            # Получаем первый незаполненный ключ в текущей группе
             missing_key = _get_missing_key_in_group(collected_fields, current_group)
             key_prompts = config.get("key_prompts", {})
-
-            if missing_key and missing_key in key_prompts:
-                example = key_prompts[missing_key]
-            else:
-                example = config["instruction"]
-
+            example = (
+                key_prompts[missing_key] if missing_key and missing_key in key_prompts
+                else config["instruction"]
+            )
             return StepResponse(
                 answer=(
                     f"Не удалось обработать ваше сообщение — попробуйте ещё раз.\n\n"
@@ -1012,23 +1135,60 @@ def process_step2_with_llm(
 
         return _continue_after_save(collected_fields)
 
-    # ШАГ 4: разделяем поля
+    # ШАГ 5: разделяем поля на новые, требующие реформулировки и конфликтующие
     to_save_directly: dict[str, object] = {}
     to_reformulate: dict[str, str] = {}
+    overwrite_candidates: list[dict] = []
 
     for k, v in new_data.items():
         if v is None:
             continue
-        if k in _FIELDS_NEEDING_REFORMULATION and isinstance(v, str) and v.strip():
-            if not collected_fields.get(k):
-                to_reformulate[k] = v
+
+        existing_val = collected_fields.get(k)
+
+        if existing_val and existing_val != v:
+            # Поле уже заполнено другим значением → запросить подтверждение
+            overwrite_candidates.append({
+                "field": k,
+                "old_value": existing_val,
+                "new_value": v,
+            })
+        elif existing_val:
+            # Значение совпадает → пропустить
+            pass
         else:
-            to_save_directly[k] = v
+            # Новое поле
+            if k in _FIELDS_NEEDING_REFORMULATION and isinstance(v, str) and v.strip():
+                to_reformulate[k] = v
+            else:
+                to_save_directly[k] = v
 
     for k, v in to_save_directly.items():
         collected_fields[k] = v
 
-    # ШАГ 5: реформулировка текстовых полей
+    # ШАГ 6: если есть конфликты перезаписи — показываем первый запрос
+    if overwrite_candidates:
+        first = overwrite_candidates[0]
+        rest = overwrite_candidates[1:]
+        collected_fields[_PENDING_OVERWRITE_KEY] = {
+            "field": first["field"],
+            "old_value": first["old_value"],
+            "new_value": first["new_value"],
+            "remaining": rest,
+        }
+        return StepResponse(
+            answer=(
+                f"Поле «{first['field']}» уже содержит:\n"
+                f"«{first['old_value']}»\n\n"
+                f"Заменить на:\n«{first['new_value']}»?\n\n"
+                f"Напишите «да» для подтверждения или «нет» для отмены."
+            ),
+            step_completed=False,
+            next_step=Step.STEP2,
+            collected_fields=collected_fields,
+        )
+
+    # ШАГ 7: реформулировка текстовых полей
     if to_reformulate:
         remaining_items = list(to_reformulate.items())
         while remaining_items:
@@ -1051,5 +1211,4 @@ def process_step2_with_llm(
                 collected_fields=collected_fields,
             )
 
-    # ШАГ 6: только структурные поля — продолжаем сбор
     return _continue_after_save(collected_fields)
