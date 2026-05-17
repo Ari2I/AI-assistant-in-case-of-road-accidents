@@ -94,6 +94,10 @@ FIELDS_CONFIG: dict[str, dict] = {
         "prompt": "Когда произошло ДТП? Укажите дату и точное время.",
         "instruction": "Формат: ДД.ММ.ГГГГ ЧЧ:ММ — например, 15.01.2024 14:30",
         "keys": ["date", "time"],
+        "key_prompts": {
+            "date": "Укажите дату ДТП.\nПример: 15.01.2024",
+            "time": "Укажите точное время ДТП.\nПример: 14:30",
+        },
     },
     "location_witnesses": {
         "prompt": (
@@ -105,7 +109,11 @@ FIELDS_CONFIG: dict[str, dict] = {
             "Свидетелей нет — так и напишите."
         ),
         "keys": ["location", "witnesses"],
-        "required_keys": ["location"],
+        "required_keys": ["location", "witnesses"],
+        "key_prompts": {
+            "location": "Укажите точное место ДТП (город, улица, дом или км трассы).\nПример: Москва, ул. Ленина, д. 1",
+            "witnesses": "Есть ли свидетели? Если да — укажите ФИО и номер телефона. Если нет — напишите «нет».\nПример: нет",
+        },
     },
     "vehicle_a_base": {
         "prompt": "Данные вашего автомобиля: марка/модель и государственный номер.",
@@ -123,12 +131,23 @@ FIELDS_CONFIG: dict[str, dict] = {
         ),
         "instruction": "Если водитель = владелец — укажите одни данные.",
         "keys": ["vehicle_a_owner_name", "vehicle_a_driver_name", "vehicle_a_driver_license"],
-        "required_keys": ["vehicle_a_owner_name", "vehicle_a_driver_name"],
+        "required_keys": ["vehicle_a_owner_name", "vehicle_a_driver_name", "vehicle_a_driver_license"],
+        "key_prompts": {
+            "vehicle_a_owner_name": "Укажите ФИО владельца вашего автомобиля.\nПример: Иванов Иван Иванович",
+            "vehicle_a_driver_name": "Укажите ФИО водителя вашего автомобиля.\nПример: Иванов Иван Иванович",
+            "vehicle_a_driver_license": "Укажите номер вашего водительского удостоверения.\nПример: 77 77 123456",
+        },
+
     },
     "vehicle_a_insurance": {
         "prompt": "Ваша страховая компания, серия и номер полиса ОСАГО, дата окончания.",
         "instruction": "Пример: Росгосстрах, ХХХ 1234567890, действует до 31.12.2025",
         "keys": ["vehicle_a_insurer", "vehicle_a_policy_number", "vehicle_a_policy_expiry"],
+        "key_prompts": {
+            "vehicle_a_insurer": "Укажите вашу страховую компанию.\nПример: Росгосстрах, СберСтрахование",
+            "vehicle_a_policy_number": "Укажите серию и номер вашего полиса ОСАГО.\nПример: ХХХ 1234567890",
+            "vehicle_a_policy_expiry": "Укажите срок действия вашего полиса ОСАГО.\nПример: действует до 31.12.2025",
+        },
     },
     "vehicle_a_damage": {
         "prompt": "Место первоначального удара на вашем авто и перечень видимых повреждений.",
@@ -159,6 +178,11 @@ FIELDS_CONFIG: dict[str, dict] = {
         "instruction": "Если водитель = владелец — укажите одни данные.",
         "keys": ["vehicle_b_owner_name", "vehicle_b_driver_name", "vehicle_b_driver_license"],
         "required_keys": ["vehicle_b_owner_name", "vehicle_b_driver_name", "vehicle_b_driver_license"],
+        "key_prompts": {
+            "vehicle_b_owner_name": "Укажите ФИО владельца автомобиля второго участника.\nПример: Петров Пётр Петрович",
+            "vehicle_b_driver_name": "Укажите ФИО водителя автомобиля второго участника.\nПример: Петров Пётр Петрович",
+            "vehicle_b_driver_license": "Укажите номер водительского удостоверения водителя второго участника.\nПример: 77 77 654321",
+        },
     },
     "vehicle_b_insurance": {
         "prompt": "Страховая компания второго участника, серия и номер полиса ОСАГО, дата окончания.",
@@ -191,6 +215,11 @@ FIELDS_CONFIG: dict[str, dict] = {
         ),
         "keys": ["circumstances", "vehicle_a_fault", "vehicle_b_fault"],
         "required_keys": ["circumstances"],
+        "key_prompts": {
+            "circumstances": "Опишите обстоятельства ДТП: кто и как двигался, какие манёвры выполнял.\nПример: я ехал прямо по главной дороге, второй участник выезжал с второстепенной и не уступил",
+            "vehicle_a_fault": "Признаёт ли водитель автомобиля А свою вину? (виноват / не виноват)\nПример: не виноват",
+            "vehicle_b_fault": "Признаёт ли водитель автомобиля Б свою вину? (виноват / не виноват)\nПример: виноват",
+        },
     },
     "scheme": {
         "prompt": (
@@ -639,8 +668,8 @@ def _continue_after_save(collected_fields: dict, prefix: str = "") -> StepRespon
         )
 
     config = FIELDS_CONFIG[current_group]
-    required = config.get("required_keys", config["keys"])
-    missing_key = next((k for k in required if not collected_fields.get(k)), None)
+    # Получаем первый незаполненный ключ в текущей группе
+    missing_key = _get_missing_key_in_group(collected_fields, current_group)
 
     key_prompts = config.get("key_prompts", {})
     if missing_key and missing_key in key_prompts:
@@ -661,12 +690,29 @@ def _continue_after_save(collected_fields: dict, prefix: str = "") -> StepRespon
 # ---------------------------------------------------------------------------
 
 def _get_current_group(collected: dict) -> str | None:
+    """
+    Возвращает первую незаполненную группу.
+    Группа считается незаполненной, если не заполнен ХОТЯ БЫ ОДИН её ключ.
+    """
     for group_id, config in FIELDS_CONFIG.items():
-        required = config.get("required_keys", config["keys"])
-        if not all(collected.get(k) for k in required):
+        keys = config["keys"]
+        if not all(collected.get(k) for k in keys):
             return group_id
     return None
 
+def _get_missing_key_in_group(collected: dict, group_id: str) -> str | None:
+    """
+    Возвращает первый незаполненный ключ в указанной группе.
+    Порядок определяется порядком ключей в конфиге.
+    """
+    config = FIELDS_CONFIG.get(group_id)
+    if not config:
+        return None
+    keys = config["keys"]
+    for key in keys:
+        if not collected.get(key):
+            return key
+    return None
 
 def _extract_fields_llm(
         giga: GigaChat,
@@ -815,8 +861,8 @@ def process_step2_with_llm(
 
         if had_error:
             config = FIELDS_CONFIG[current_group]
-            required = config.get("required_keys", config["keys"])
-            missing_key = next((k for k in required if not collected_fields.get(k)), None)
+            # Получаем первый незаполненный ключ в текущей группе
+            missing_key = _get_missing_key_in_group(collected_fields, current_group)
             key_prompts = config.get("key_prompts", {})
 
             if missing_key and missing_key in key_prompts:
