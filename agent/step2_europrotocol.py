@@ -1078,6 +1078,18 @@ def process_step2_with_llm(
         if current_group else ""
     ) or ""
 
+    # ШАГ 3a: для текстовых полей берём сообщение пользователя напрямую.
+    # GigaChat стабильно обрезает длинный текст и в JSON, и в plain-text режиме.
+    # Агент только что спросил именно об этом поле — ответ пользователя и есть значение.
+    # Реформулировка (ШАГ 7) приведёт текст к официальному стилю без потерь.
+    direct_text: dict[str, str] = {}
+    if (
+        current_key in _FIELDS_NEEDING_REFORMULATION
+        and not collected_fields.get(current_key)
+        and len(query.strip()) > 10
+    ):
+        direct_text[current_key] = query.strip()
+
     # ШАГ 3: JSON-извлечение (структурные поля)
     had_error = False
     try:
@@ -1087,17 +1099,14 @@ def process_step2_with_llm(
         new_data = {}
         had_error = True
 
-    # ШАГ 4: для текстовых полей — отдельный plain-text вызов
-    # если JSON вернул пустое значение или заметно обрезанное
+    # ШАГ 4: для остальных текстовых полей — single-field plain-text вызов,
+    # если JSON вернул пустое или заметно обрезанное значение
     for field in _TEXT_FIELD_DESCRIPTIONS:
-        if collected_fields.get(field):
-            # уже заполнено — перезапись обрабатывается ниже через overwrite
+        if collected_fields.get(field) or field in direct_text:
             continue
 
         json_value = new_data.get(field)
 
-        # Считаем значение обрезанным если оно заметно короче сообщения
-        # и не заканчивается на знак препинания
         is_truncated = (
             json_value
             and isinstance(json_value, str)
@@ -1110,6 +1119,10 @@ def process_step2_with_llm(
             if extracted:
                 new_data[field] = extracted
                 print(f"[step2] single-field extraction used for '{field}'")
+
+    # direct_text имеет абсолютный приоритет над LLM-результатом
+    for k, v in direct_text.items():
+        new_data[k] = v
 
     if not new_data:
         if current_group is None:
@@ -1134,6 +1147,81 @@ def process_step2_with_llm(
             )
 
         return _continue_after_save(collected_fields)
+
+    # ШАГ 5: разделяем поля на новые, требующие реформулировки и конфликтующие
+    to_save_directly: dict[str, object] = {}
+    to_reformulate: dict[str, str] = {}
+    overwrite_candidates: list[dict] = []
+
+    for k, v in new_data.items():
+        if v is None:
+            continue
+
+        existing_val = collected_fields.get(k)
+
+        if existing_val and existing_val != v:
+            overwrite_candidates.append({
+                "field": k,
+                "old_value": existing_val,
+                "new_value": v,
+            })
+        elif existing_val:
+            pass
+        else:
+            if k in _FIELDS_NEEDING_REFORMULATION and isinstance(v, str) and v.strip():
+                to_reformulate[k] = v
+            else:
+                to_save_directly[k] = v
+
+    for k, v in to_save_directly.items():
+        collected_fields[k] = v
+
+    # ШАГ 6: конфликты перезаписи
+    if overwrite_candidates:
+        first = overwrite_candidates[0]
+        rest = overwrite_candidates[1:]
+        collected_fields[_PENDING_OVERWRITE_KEY] = {
+            "field": first["field"],
+            "old_value": first["old_value"],
+            "new_value": first["new_value"],
+            "remaining": rest,
+        }
+        return StepResponse(
+            answer=(
+                f"Поле «{first['field']}» уже содержит:\n"
+                f"«{first['old_value']}»\n\n"
+                f"Заменить на:\n«{first['new_value']}»?\n\n"
+                f"Напишите «да» для подтверждения или «нет» для отмены."
+            ),
+            step_completed=False,
+            next_step=Step.STEP2,
+            collected_fields=collected_fields,
+        )
+
+    # ШАГ 7: реформулировка текстовых полей
+    if to_reformulate:
+        remaining_items = list(to_reformulate.items())
+        while remaining_items:
+            first_field, first_original = remaining_items.pop(0)
+            remaining = dict(remaining_items)
+
+            proposal = _build_pending_proposal(giga, first_field, first_original, remaining)
+
+            if proposal is None:
+                collected_fields[first_field] = first_original
+                continue
+
+            pending_state, answer_text = proposal
+            collected_fields[_PENDING_KEY] = pending_state
+
+            return StepResponse(
+                answer=answer_text,
+                step_completed=False,
+                next_step=Step.STEP2,
+                collected_fields=collected_fields,
+            )
+
+    return _continue_after_save(collected_fields)
 
     # ШАГ 5: разделяем поля на новые, требующие реформулировки и конфликтующие
     to_save_directly: dict[str, object] = {}
