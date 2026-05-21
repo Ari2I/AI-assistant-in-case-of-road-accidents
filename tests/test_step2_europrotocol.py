@@ -1,479 +1,474 @@
 """
-Unit-тесты для модуля step2_europrotocol.
+Тесты для process_step2_with_llm и вспомогательных функций step2.
 
-Проверяют детерминированную логику проверки возможности Европротокола.
+Покрывают:
+  - pending reformulation: подтверждение / отклонение / свой вариант
+  - pending overwrite: подтверждение / отклонение / цепочка конфликтов
+  - direct_text: захват текстовых полей напрямую из query
+  - заполнение структурных полей через мок LLM
+  - завершение шага при всех заполненных полях
+  - обработку ошибок LLM
 """
 
 from __future__ import annotations
 
-import unittest
+import sys
+import pytest
+from collections import deque
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from agent.step2_europrotocol import (
-    EuroprotocolCheckResult,
-    StopFactor,
-    LIMIT_BASE,
-    LIMIT_WITH_APP_NO_DISAGREEMENT,
-    LIMIT_WITH_APP_DISAGREEMENT,
-    process_step2_check,
-    validate_slots_for_step2,
+    _PENDING_KEY,
+    _PENDING_OVERWRITE_KEY,
+    _FIELDS_NEEDING_REFORMULATION,
+    _handle_reformulation_response,
+    _handle_overwrite_response,
+    _get_current_group,
+    _get_missing_key_in_group,
+    _continue_after_save,
+    process_step2_with_llm,
+    FIELDS_CONFIG,
 )
+from agent.step_types import Step
 
 
-class TestStopFactor(unittest.TestCase):
-    """Тесты для класса StopFactor."""
+# ---------------------------------------------------------------------------
+# Вспомогательный мок GigaChat
+# ---------------------------------------------------------------------------
 
-    def test_to_dict(self) -> None:
-        """Проверка конвертации в словарь."""
-        sf = StopFactor(
-            code="victims",
-            message="Есть пострадавшие",
-            severity="critical",
+def _make_queue_giga(responses: list[str]):
+    """
+    Мок GigaChat с очередью ответов.
+    При исчерпании очереди возвращает '{}' (пустой JSON).
+    """
+    queue = deque(responses)
+
+    class QueueGiga:
+        def chat(self, *args, **kwargs):
+            response = queue.popleft() if queue else "{}"
+            class FakeMsg:
+                content = response
+            class FakeChoice:
+                message = FakeMsg()
+            class FakeResp:
+                choices = [FakeChoice()]
+            return FakeResp()
+
+    return QueueGiga()
+
+
+def _all_fields_filled() -> dict:
+    """Возвращает dict со всеми заполненными полями step2."""
+    return {
+        "date": "15.01.2025",
+        "time": "14:30",
+        "location": "г. Москва, ул. Ленина, д. 10",
+        "witnesses": "нет",
+        "vehicle_a_make_model": "Toyota Camry",
+        "vehicle_a_reg_number": "А123БВ777",
+        "vehicle_a_owner_name": "Иванов И.И.",
+        "vehicle_a_driver_name": "Иванов И.И.",
+        "vehicle_a_driver_license": "77 77 123456",
+        "vehicle_a_insurer": "Росгосстрах",
+        "vehicle_a_policy_number": "ХХХ 1234567890",
+        "vehicle_a_policy_expiry": "31.12.2025",
+        "vehicle_a_impact_point": "передний бампер",
+        "vehicle_a_damage": "передний бампер — трещина",
+        "vehicle_b_make_model": "Kia Rio",
+        "vehicle_b_reg_number": "В456СМ777",
+        "vehicle_b_owner_name": "Петров П.П.",
+        "vehicle_b_driver_name": "Петров П.П.",
+        "vehicle_b_driver_license": "77 77 654321",
+        "vehicle_b_insurer": "СОГАЗ",
+        "vehicle_b_policy_number": "ЕЕЕ 0987654321",
+        "vehicle_b_policy_expiry": "30.06.2025",
+        "vehicle_b_impact_point": "задний бампер",
+        "vehicle_b_damage": "задний бампер — царапина",
+        "circumstances": "ТС А двигалось прямо, ТС Б выезжало задним ходом.",
+        "vehicle_a_fault": "не виноват",
+        "vehicle_b_fault": "виноват",
+        "scheme": "ТС А у обочины, ТС Б въехало сзади.",
+        "signatures_confirmed": True,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Тесты вспомогательных функций
+# ---------------------------------------------------------------------------
+
+class TestGetCurrentGroup:
+    """Тесты _get_current_group."""
+
+    def test_empty_fields_returns_first_group(self):
+        assert _get_current_group({}) == "datetime"
+
+    def test_date_filled_time_missing(self):
+        """Группа datetime не завершена пока time не заполнен."""
+        assert _get_current_group({"date": "15.01.2025"}) == "datetime"
+
+    def test_all_filled_returns_none(self):
+        assert _get_current_group(_all_fields_filled()) is None
+
+    def test_skips_completed_groups(self):
+        fields = {"date": "15.01.2025", "time": "14:30"}
+        assert _get_current_group(fields) == "location_witnesses"
+
+
+class TestGetMissingKeyInGroup:
+    """Тесты _get_missing_key_in_group."""
+
+    def test_datetime_both_missing(self):
+        assert _get_missing_key_in_group({}, "datetime") == "date"
+
+    def test_datetime_date_filled(self):
+        assert _get_missing_key_in_group({"date": "15.01.2025"}, "datetime") == "time"
+
+    def test_vehicle_b_persons_strict_order(self):
+        """vehicle_b_persons имеет strict_order — заполняются по fill_order."""
+        assert _get_missing_key_in_group({}, "vehicle_b_persons") == "vehicle_b_owner_name"
+        assert _get_missing_key_in_group(
+            {"vehicle_b_owner_name": "Петров П.П."},
+            "vehicle_b_persons"
+        ) == "vehicle_b_driver_name"
+
+    def test_all_keys_filled_returns_none(self):
+        fields = {"date": "15.01.2025", "time": "14:30"}
+        assert _get_missing_key_in_group(fields, "datetime") is None
+
+
+class TestContinueAfterSave:
+    """Тесты _continue_after_save."""
+
+    def test_all_filled_returns_done(self):
+        result = _continue_after_save(_all_fields_filled())
+        assert result.step_completed is True
+        assert result.next_step == Step.DONE
+        assert result.final_json is not None
+        assert result.final_json["type"] == "europrotocol"
+
+    def test_partial_asks_next_question(self):
+        result = _continue_after_save({"date": "15.01.2025", "time": "14:30"})
+        assert result.step_completed is False
+        assert result.next_step == Step.STEP2
+        assert result.answer  # есть вопрос
+
+    def test_prefix_prepended_to_answer(self):
+        result = _continue_after_save({}, prefix="Записано.\n\n")
+        assert result.answer.startswith("Записано.")
+
+    def test_final_json_excludes_pending_keys(self):
+        """Служебные ключи не должны попасть в final_json."""
+        fields = _all_fields_filled()
+        fields[_PENDING_KEY] = {"field": "circumstances", "original": "...", "reformulated": "..."}
+        fields[_PENDING_OVERWRITE_KEY] = {"field": "date", "old_value": "...", "new_value": "..."}
+        result = _continue_after_save(fields)
+        assert _PENDING_KEY not in result.final_json["data"]
+        assert _PENDING_OVERWRITE_KEY not in result.final_json["data"]
+
+
+# ---------------------------------------------------------------------------
+# Тесты обработки reformulation pending
+# ---------------------------------------------------------------------------
+
+class TestHandleReformulationResponse:
+    """Тесты _handle_reformulation_response."""
+
+    def _make_pending(self, remaining: dict | None = None) -> dict:
+        return {
+            "field": "circumstances",
+            "original": "я ехал, он въехал",
+            "reformulated": "ТС А двигалось прямо, ТС Б выехало с парковки.",
+            "remaining": remaining or {},
+        }
+
+    def test_approval_saves_reformulated(self):
+        pending = self._make_pending()
+        collected = {_PENDING_KEY: pending}
+        giga = _make_queue_giga([])
+
+        result = _handle_reformulation_response(giga, "да", collected, pending)
+
+        assert collected.get("circumstances") == pending["reformulated"]
+        assert _PENDING_KEY not in collected
+
+    def test_rejection_saves_original(self):
+        pending = self._make_pending()
+        collected = {_PENDING_KEY: pending}
+        giga = _make_queue_giga([])
+
+        result = _handle_reformulation_response(giga, "нет", collected, pending)
+
+        assert collected.get("circumstances") == pending["original"]
+        assert _PENDING_KEY not in collected
+
+    def test_custom_text_saves_as_is(self):
+        pending = self._make_pending()
+        collected = {_PENDING_KEY: pending}
+        giga = _make_queue_giga([])
+        custom = "Моя собственная формулировка для протокола."
+
+        result = _handle_reformulation_response(giga, custom, collected, pending)
+
+        assert collected.get("circumstances") == custom
+
+    def test_empty_query_shows_repeat_prompt(self):
+        pending = self._make_pending()
+        collected = {_PENDING_KEY: pending}
+        giga = _make_queue_giga([])
+
+        result = _handle_reformulation_response(giga, "", collected, pending)
+
+        assert result.step_completed is False
+        assert pending["reformulated"] in result.answer
+        assert _PENDING_KEY in collected  # pending сохранён
+
+    def test_remaining_processed_after_approval(self):
+        """После подтверждения обрабатывается следующее поле из remaining."""
+        pending = self._make_pending(
+            remaining={"scheme": "он стоял справа"}
+        )
+        collected = {_PENDING_KEY: pending}
+        # LLM для реформулировки scheme
+        giga = _make_queue_giga(["ТС Б находилось справа от ТС А."])
+
+        _handle_reformulation_response(giga, "да", collected, pending)
+
+        # Должен появиться новый pending для scheme
+        assert _PENDING_KEY in collected
+        assert collected[_PENDING_KEY]["field"] == "scheme"
+
+
+# ---------------------------------------------------------------------------
+# Тесты обработки overwrite pending
+# ---------------------------------------------------------------------------
+
+class TestHandleOverwriteResponse:
+    """Тесты _handle_overwrite_response."""
+
+    def _make_pending(self, remaining: list | None = None) -> dict:
+        return {
+            "field": "date",
+            "old_value": "15.01.2025",
+            "new_value": "16.01.2025",
+            "remaining": remaining or [],
+        }
+
+    def test_approval_updates_field(self):
+        pending = self._make_pending()
+        collected = {"date": "15.01.2025", _PENDING_OVERWRITE_KEY: pending}
+
+        result = _handle_overwrite_response("да", collected, pending)
+
+        assert collected["date"] == "16.01.2025"
+        assert _PENDING_OVERWRITE_KEY not in collected
+
+    def test_rejection_keeps_old_value(self):
+        pending = self._make_pending()
+        collected = {"date": "15.01.2025", _PENDING_OVERWRITE_KEY: pending}
+
+        result = _handle_overwrite_response("нет", collected, pending)
+
+        assert collected["date"] == "15.01.2025"
+        assert _PENDING_OVERWRITE_KEY not in collected
+
+    def test_chain_of_overwrites(self):
+        """При наличии remaining показывается следующий конфликт."""
+        pending = self._make_pending(remaining=[
+            {"field": "time", "old_value": "14:30", "new_value": "15:00"}
+        ])
+        collected = {"date": "15.01.2025", _PENDING_OVERWRITE_KEY: pending}
+
+        result = _handle_overwrite_response("да", collected, pending)
+
+        # Следующий конфликт должен быть установлен
+        assert _PENDING_OVERWRITE_KEY in collected
+        assert collected[_PENDING_OVERWRITE_KEY]["field"] == "time"
+        assert "time" in result.answer
+
+
+# ---------------------------------------------------------------------------
+# Тесты direct_text (прямой захват текстовых полей)
+# ---------------------------------------------------------------------------
+
+class TestDirectText:
+    """Тесты прямого захвата текстовых полей из query."""
+
+    def test_circumstances_captured_directly(self):
+        """
+        Когда текущий ключ — circumstances и пользователь отвечает длинным текстом,
+        он должен попасть в collected_fields без LLM-извлечения.
+        """
+        # Готовим поля: всё заполнено до fault_circumstances
+        fields = _all_fields_filled()
+        # Удаляем circumstances и вину чтобы группа была активной
+        for k in ["circumstances", "vehicle_a_fault", "vehicle_b_fault"]:
+            fields.pop(k, None)
+
+        long_query = (
+            "Я ехал прямо по правой полосе улицы Ленина в направлении севера. "
+            "Второй участник выезжал задним ходом с парковки справа и не уступил дорогу, "
+            "въехав в мой передний бампер."
         )
 
-        result = sf.to_dict()
+        # LLM возвращает {} — только direct_text должен сработать
+        giga = _make_queue_giga(["{}"])
+        result = process_step2_with_llm(giga, long_query, [], {}, fields)
 
-        self.assertEqual(result["code"], "victims")
-        self.assertEqual(result["message"], "Есть пострадавшие")
-        self.assertEqual(result["severity"], "critical")
+        # circumstances должен быть захвачен
+        assert fields.get("circumstances") == long_query or result.collected_fields.get("circumstances") == long_query
+
+    def test_short_query_not_captured_as_circumstances(self):
+        """Короткий ответ (<=10 символов) не должен захватываться как circumstances."""
+        fields = _all_fields_filled()
+        for k in ["circumstances", "vehicle_a_fault", "vehicle_b_fault"]:
+            fields.pop(k, None)
+
+        giga = _make_queue_giga(["{}"])
+        result = process_step2_with_llm(giga, "не знаю", [], {}, fields)
+
+        assert not result.collected_fields.get("circumstances")
+
+    def test_direct_text_only_when_field_empty(self):
+        """Если circumstances уже заполнен — direct_text не перезаписывает."""
+        fields = _all_fields_filled()
+        fields.pop("vehicle_a_fault", None)
+        fields.pop("vehicle_b_fault", None)
+        # circumstances уже есть
+        original_circumstances = fields["circumstances"]
+
+        giga = _make_queue_giga(["{}"])
+        result = process_step2_with_llm(giga, "какой-то другой текст про обстоятельства", [], {}, fields)
+
+        assert result.collected_fields.get("circumstances") == original_circumstances
 
 
-class TestEuroprotocolCheckResult(unittest.TestCase):
-    """Тесты для класса EuroprotocolCheckResult."""
+# ---------------------------------------------------------------------------
+# Тесты process_step2_with_llm — flow control
+# ---------------------------------------------------------------------------
 
-    def test_to_dict_empty(self) -> None:
-        """Проверка конвертации пустого результата."""
-        result = EuroprotocolCheckResult(
-            is_possible=True,
-            stop_factors=[],
-            recommendation="Test",
-            next_step="step3",
-            limits={"base": 100000},
+class TestStep2WithLLMFlow:
+    """Тесты основного потока управления в process_step2_with_llm."""
+
+    def test_pending_reformulation_takes_priority(self):
+        """Если _PENDING_KEY установлен — идёт в _handle_reformulation_response."""
+        pending = {
+            "field": "circumstances",
+            "original": "ехал, он въехал",
+            "reformulated": "ТС А двигалось прямо.",
+            "remaining": {},
+        }
+        collected = {_PENDING_KEY: pending, "date": "15.01.2025"}
+        giga = _make_queue_giga([])
+
+        result = process_step2_with_llm(giga, "да", [], {}, collected)
+
+        # Должен сохранить reformulated и продолжить
+        assert result.collected_fields.get("circumstances") == pending["reformulated"]
+
+    def test_pending_overwrite_takes_priority_over_extraction(self):
+        """Если _PENDING_OVERWRITE_KEY установлен — идёт в _handle_overwrite_response."""
+        pending_ow = {
+            "field": "date",
+            "old_value": "15.01.2025",
+            "new_value": "16.01.2025",
+            "remaining": [],
+        }
+        collected = {"date": "15.01.2025", _PENDING_OVERWRITE_KEY: pending_ow}
+        giga = _make_queue_giga([])
+
+        result = process_step2_with_llm(giga, "да", [], {}, collected)
+
+        assert result.collected_fields.get("date") == "16.01.2025"
+
+    def test_overwrite_triggered_when_llm_returns_different_value(self):
+        """Если LLM возвращает значение отличное от существующего — появляется pending_overwrite."""
+        collected = {"date": "15.01.2025", "time": "14:30"}  # date уже заполнен
+        # LLM возвращает другую дату
+        giga = _make_queue_giga(['{"date": "16.01.2025"}'])
+
+        result = process_step2_with_llm(giga, "ДТП было 16 января", [], {}, collected)
+
+        assert _PENDING_OVERWRITE_KEY in result.collected_fields
+        assert result.collected_fields[_PENDING_OVERWRITE_KEY]["field"] == "date"
+        assert result.collected_fields[_PENDING_OVERWRITE_KEY]["old_value"] == "15.01.2025"
+        assert result.collected_fields[_PENDING_OVERWRITE_KEY]["new_value"] == "16.01.2025"
+
+    def test_llm_error_returns_error_message(self):
+        """При ошибке LLM возвращается сообщение с просьбой повторить."""
+        class ErrorGiga:
+            def chat(self, *a, **kw):
+                raise RuntimeError("API error")
+
+        result = process_step2_with_llm(ErrorGiga(), "тест", [], {}, {})
+
+        assert result.step_completed is False
+        assert result.next_step == Step.STEP2
+        assert "попробуйте" in result.answer.lower() or result.answer
+
+    def test_all_fields_filled_returns_final_json(self):
+        """Когда все поля заполнены — возвращает step_completed=True и final_json."""
+        giga = _make_queue_giga(["{}"])
+        result = process_step2_with_llm(giga, "всё верно", [], {}, _all_fields_filled())
+
+        assert result.step_completed is True
+        assert result.next_step == Step.DONE
+        assert result.final_json is not None
+        assert result.final_json["type"] == "europrotocol"
+        assert result.final_json["data"]["date"] == "15.01.2025"
+
+    def test_new_field_saved_directly(self):
+        """Новое структурное поле (не текстовое) сохраняется сразу без reformulation."""
+        collected = {}
+        giga = _make_queue_giga(['{"date": "15.01.2025", "time": "14:30"}'])
+
+        result = process_step2_with_llm(giga, "15.01.2025 14:30", [], {}, collected)
+
+        assert result.collected_fields.get("date") == "15.01.2025"
+        assert result.collected_fields.get("time") == "14:30"
+        assert _PENDING_KEY not in result.collected_fields
+
+    def test_text_field_goes_to_reformulation(self):
+        """Текстовое поле (circumstances) проходит через reformulation loop."""
+        # Все поля кроме circumstances / fault заполнены
+        fields = _all_fields_filled()
+        for k in ["circumstances", "vehicle_a_fault", "vehicle_b_fault"]:
+            fields.pop(k, None)
+
+        long_text = (
+            "я ехал прямо, второй участник выезжал с парковки задним ходом "
+            "и не уступил мне дорогу, ударив в передний бампер"
         )
 
-        result_dict = result.to_dict()
-
-        self.assertTrue(result_dict["is_possible"])
-        self.assertEqual(result_dict["stop_factors"], [])
-        self.assertEqual(result_dict["recommendation"], "Test")
-        self.assertEqual(result_dict["next_step"], "step3")
-        self.assertEqual(result_dict["limits"], {"base": 100000})
-
-    def test_to_dict_with_stop_factors(self) -> None:
-        """Проверка конвертации со стоп-факторами."""
-        result = EuroprotocolCheckResult(
-            is_possible=False,
-            stop_factors=[
-                StopFactor("victims", "Пострадавшие", "critical"),
-            ],
-            recommendation="Call 102",
-            next_step="call_gibdd",
-            limits={},
-        )
-
-        result_dict = result.to_dict()
-
-        self.assertFalse(result_dict["is_possible"])
-        self.assertEqual(len(result_dict["stop_factors"]), 1)
-        self.assertEqual(result_dict["stop_factors"][0]["code"], "victims")
-
-
-class TestProcessStep2Check(unittest.TestCase):
-    """Тесты для основной функции process_step2_check."""
-
-    # =========================================================================
-    # СЦЕНАРИЙ A: Европротокол возможен
-    # =========================================================================
-
-    def test_europrotocol_possible_no_disagreement(self) -> None:
-        """✅ Европротокол возможен: нет разногласий, без приложения."""
-        slots = {
-            "victims": False,
-            "participants_count": 2,
-            "osago_both": True,
-            "disagreement": False,
-        }
-
-        result = process_step2_check(slots, has_app=False)
-
-        self.assertTrue(result.is_possible)
-        self.assertEqual(len(result.stop_factors), 0)
-        self.assertEqual(result.next_step, "step3_fixation")
-        self.assertIn("base", result.limits)
-        self.assertEqual(result.limits["base"], LIMIT_BASE)
-
-    def test_europrotocol_possible_with_app(self) -> None:
-        """✅ Европротокол возможен: с приложением, максимальный лимит."""
-        slots = {
-            "victims": False,
-            "participants_count": 2,
-            "osago_both": True,
-            "disagreement": False,
-        }
-
-        result = process_step2_check(slots, has_app=True)
-
-        self.assertTrue(result.is_possible)
-        self.assertEqual(len(result.stop_factors), 0)
-        self.assertEqual(result.next_step, "step3_fixation")
-        self.assertEqual(
-            result.limits["base"],
-            LIMIT_WITH_APP_NO_DISAGREEMENT,
-        )
-
-    # =========================================================================
-    # СЦЕНАРИЙ B: Европротокол невозможен (критические стоп-факторы)
-    # =========================================================================
-
-    def test_victims_present(self) -> None:
-        """❌ Пострадавшие: Европротокол невозможен."""
-        slots = {
-            "victims": True,
-            "participants_count": 2,
-            "osago_both": True,
-            "disagreement": False,
-        }
-
-        result = process_step2_check(slots, has_app=False)
-
-        self.assertFalse(result.is_possible)
-        self.assertEqual(len(result.stop_factors), 1)
-        self.assertEqual(result.stop_factors[0].code, "victims")
-        self.assertEqual(result.stop_factors[0].severity, "critical")
-        self.assertEqual(result.next_step, "call_gibdd")
-
-    def test_participants_3plus(self) -> None:
-        """❌ Участников > 2: Европротокол невозможен."""
-        slots = {
-            "victims": False,
-            "participants_count": 3,
-            "osago_both": True,
-            "disagreement": False,
-        }
-
-        result = process_step2_check(slots, has_app=False)
-
-        self.assertFalse(result.is_possible)
-        self.assertEqual(len(result.stop_factors), 1)
-        self.assertEqual(
-            result.stop_factors[0].code,
-            "participants_3plus",
-        )
-        self.assertEqual(result.next_step, "call_gibdd")
-
-    def test_single_participant(self) -> None:
-        """❌ Один участник: Европротокол невозможен."""
-        slots = {
-            "victims": False,
-            "participants_count": 1,
-            "osago_both": True,
-            "disagreement": False,
-        }
-
-        result = process_step2_check(slots, has_app=False)
-
-        self.assertFalse(result.is_possible)
-        self.assertEqual(len(result.stop_factors), 1)
-        self.assertEqual(
-            result.stop_factors[0].code,
-            "participants_1",
-        )
-        self.assertEqual(result.next_step, "call_gibdd")
-
-    def test_no_osago(self) -> None:
-        """❌ Нет ОСАГО: Европротокол невозможен."""
-        slots = {
-            "victims": False,
-            "participants_count": 2,
-            "osago_both": False,
-            "disagreement": False,
-        }
-
-        result = process_step2_check(slots, has_app=False)
-
-        self.assertFalse(result.is_possible)
-        self.assertEqual(len(result.stop_factors), 1)
-        self.assertEqual(result.stop_factors[0].code, "no_osago")
-        self.assertEqual(result.next_step, "call_gibdd")
-
-    def test_multiple_critical_factors(self) -> None:
-        """❌ Несколько критических факторов одновременно."""
-        slots = {
-            "victims": True,
-            "participants_count": 3,
-            "osago_both": False,
-            "disagreement": True,
-        }
-
-        result = process_step2_check(slots, has_app=False)
-
-        self.assertFalse(result.is_possible)
-        # Должны быть все критические факторы
-        codes = [sf.code for sf in result.stop_factors]
-        self.assertIn("victims", codes)
-        self.assertIn("participants_3plus", codes)
-        self.assertIn("no_osago", codes)
-        self.assertEqual(result.next_step, "call_gibdd")
-
-    # =========================================================================
-    # СЦЕНАРИЙ C: Европротокол условно возможен (разногласия)
-    # =========================================================================
-
-    def test_disagreement_without_app(self) -> None:
-        """⚠️ Разногласия без приложения: условно возможен."""
-        slots = {
-            "victims": False,
-            "participants_count": 2,
-            "osago_both": True,
-            "disagreement": True,
-        }
-
-        result = process_step2_check(slots, has_app=False)
-
-        self.assertEqual(result.is_possible, "conditional")
-        self.assertEqual(len(result.stop_factors), 1)
-        self.assertEqual(
-            result.stop_factors[0].code,
-            "disagreement_no_app",
-        )
-        self.assertEqual(result.stop_factors[0].severity, "warning")
-        self.assertEqual(
-            result.next_step,
-            "step3_fixation_with_disagreement",
-        )
-        self.assertEqual(result.limits.get("base"), 0)
-        self.assertEqual(
-            result.limits.get("with_app"),
-            LIMIT_WITH_APP_DISAGREEMENT,
-        )
-
-    def test_disagreement_with_app(self) -> None:
-        """✅ Разногласия с приложением: возможен (лимит 200к)."""
-        slots = {
-            "victims": False,
-            "participants_count": 2,
-            "osago_both": True,
-            "disagreement": True,
-        }
-
-        result = process_step2_check(slots, has_app=True)
-
-        # С приложением разногласия не блокируют
-        self.assertTrue(result.is_possible)
-        self.assertEqual(len(result.stop_factors), 0)
-        self.assertEqual(result.next_step, "step3_fixation")
-        self.assertEqual(
-            result.limits["base"],
-            LIMIT_WITH_APP_DISAGREEMENT,
-        )
-
-    # =========================================================================
-    # ГРАНИЧНЫЕ СЛУЧАИ
-    # =========================================================================
-
-    def test_none_values_in_slots(self) -> None:
-        """Проверка обработки None значений в слотах."""
-        slots = {
-            "victims": None,
-            "participants_count": None,
-            "osago_both": None,
-            "disagreement": None,
-        }
-
-        # None значения не должны вызывать ошибок
-        # и не должны считаться стоп-факторами
-        result = process_step2_check(slots, has_app=False)
-
-        # При None значениях Европротокол считается возможным
-        # (логика проверяет только явные True/False)
-        self.assertTrue(result.is_possible)
-
-    def test_missing_slots(self) -> None:
-        """Проверка обработки отсутствующих слотов."""
-        slots: dict = {}
-
-        # Пустые слоты не должны вызывать ошибок
-        result = process_step2_check(slots, has_app=False)
-
-        # Без данных Европротокол считается возможным
-        # (валидация должна происходить до вызова этой функции)
-        self.assertTrue(result.is_possible)
-
-
-class TestValidateSlotsForStep2(unittest.TestCase):
-    """Тесты для функции валидации слотов."""
-
-    def test_valid_slots(self) -> None:
-        """Валидные слоты."""
-        slots = {
-            "victims": False,
-            "participants_count": 2,
-            "osago_both": True,
-            "disagreement": False,
-        }
-
-        is_valid, errors = validate_slots_for_step2(slots)
-
-        self.assertTrue(is_valid)
-        self.assertEqual(errors, [])
-
-    def test_missing_required_slot(self) -> None:
-        """Отсутствует обязательный слот."""
-        slots = {
-            "victims": False,
-            "participants_count": 2,
-            # osago_both отсутствует
-            "disagreement": False,
-        }
-
-        is_valid, errors = validate_slots_for_step2(slots)
-
-        self.assertFalse(is_valid)
-        self.assertTrue(len(errors) > 0)
-        self.assertTrue(any("osago_both" in err for err in errors))
-
-    def test_invalid_type_victims(self) -> None:
-        """Неверный тип для victims."""
-        slots = {
-            "victims": "yes",  # должно быть bool
-            "participants_count": 2,
-            "osago_both": True,
-            "disagreement": False,
-        }
-
-        is_valid, errors = validate_slots_for_step2(slots)
-
-        self.assertFalse(is_valid)
-        self.assertTrue(any("victims must be bool" in err for err in errors))
-
-    def test_invalid_type_participants_count(self) -> None:
-        """Неверный тип для participants_count."""
-        slots = {
-            "victims": False,
-            "participants_count": "two",  # должно быть int
-            "osago_both": True,
-            "disagreement": False,
-        }
-
-        is_valid, errors = validate_slots_for_step2(slots)
-
-        self.assertFalse(is_valid)
-        self.assertTrue(
-            any("participants_count must be int" in err for err in errors)
-        )
-
-    def test_invalid_type_osago_both(self) -> None:
-        """Неверный тип для osago_both."""
-        slots = {
-            "victims": False,
-            "participants_count": 2,
-            "osago_both": "yes",  # должно быть bool
-            "disagreement": False,
-        }
-
-        is_valid, errors = validate_slots_for_step2(slots)
-
-        self.assertFalse(is_valid)
-        self.assertTrue(any("osago_both must be bool" in err for err in errors))
-
-    def test_invalid_type_disagreement(self) -> None:
-        """Неверный тип для disagreement."""
-        slots = {
-            "victims": False,
-            "participants_count": 2,
-            "osago_both": True,
-            "disagreement": "no",  # должно быть bool
-        }
-
-        is_valid, errors = validate_slots_for_step2(slots)
-
-        self.assertFalse(is_valid)
-        self.assertTrue(
-            any("disagreement must be bool" in err for err in errors)
-        )
-
-    def test_null_values_allowed(self) -> None:
-        """None значения допустимы."""
-        slots = {
-            "victims": None,
-            "participants_count": None,
-            "osago_both": None,
-            "disagreement": None,
-        }
-
-        is_valid, errors = validate_slots_for_step2(slots)
-
-        # None значения допустимы
-        self.assertTrue(is_valid)
-        self.assertEqual(errors, [])
-
-
-class TestRecommendations(unittest.TestCase):
-    """Тесты для рекомендаций в результатах."""
-
-    def test_victims_recommendation_includes_103(self) -> None:
-        """Рекомендация при пострадавших включает 103."""
-        slots = {
-            "victims": True,
-            "participants_count": 2,
-            "osago_both": True,
-            "disagreement": False,
-        }
-
-        result = process_step2_check(slots, has_app=False)
-
-        self.assertIn("103", result.recommendation)
-        self.assertIn("102", result.recommendation)
-
-    def test_no_victims_recommendation_includes_102(self) -> None:
-        """Рекомендация без пострадавших включает 102."""
-        slots = {
-            "victims": False,
-            "participants_count": 3,
-            "osago_both": True,
-            "disagreement": False,
-        }
-
-        result = process_step2_check(slots, has_app=False)
-
-        self.assertIn("102", result.recommendation)
-        self.assertNotIn("103", result.recommendation)
-
-    def test_possible_recommendation_mentions_apps(self) -> None:
-        """Рекомендация при возможном Европротоколе упоминает приложения."""
-        slots = {
-            "victims": False,
-            "participants_count": 2,
-            "osago_both": True,
-            "disagreement": False,
-        }
-
-        result = process_step2_check(slots, has_app=False)
-
-        self.assertTrue(result.is_possible)
-        # Проверяем, что есть упоминание приложений или лимита
-        self.assertTrue(
-            "приложение" in result.recommendation.lower()
-            or "400 000" in result.recommendation
-        )
-
-    def test_conditional_recommendation_mentions_apps(self) -> None:
-        """Рекомендация при разногласиях упоминает приложения."""
-        slots = {
-            "victims": False,
-            "participants_count": 2,
-            "osago_both": True,
-            "disagreement": True,
-        }
-
-        result = process_step2_check(slots, has_app=False)
-
-        self.assertEqual(result.is_possible, "conditional")
-        self.assertTrue(
-            "приложение" in result.recommendation.lower()
-            or "Госуслуги" in result.recommendation
-            or "Помощник" in result.recommendation
-        )
-
-
-if __name__ == "__main__":
-    unittest.main()
+        # LLM 1: extraction возвращает circumstances
+        # LLM 2: reformulation возвращает официальный текст
+        giga = _make_queue_giga([
+            f'{{"circumstances": "{long_text}"}}',
+            "ТС А двигалось прямо по проезжей части, ТС Б выполняло движение задним ходом.",
+        ])
+
+        result = process_step2_with_llm(giga, long_text, [], {}, fields)
+
+        # Должен быть pending для подтверждения
+        assert _PENDING_KEY in result.collected_fields
+        assert result.collected_fields[_PENDING_KEY]["field"] == "circumstances"
+        assert result.step_completed is False
+
+
+# ---------------------------------------------------------------------------
+# Тесты _FIELDS_NEEDING_REFORMULATION
+# ---------------------------------------------------------------------------
+
+class TestFieldsNeedingReformulation:
+    """Проверяем что константа содержит правильные поля."""
+
+    def test_contains_expected_fields(self):
+        expected = {"circumstances", "scheme", "vehicle_a_damage", "vehicle_b_damage"}
+        assert expected == _FIELDS_NEEDING_REFORMULATION
+
+    def test_structural_fields_not_in_reformulation(self):
+        structural = {"date", "time", "location", "vehicle_a_make_model",
+                      "vehicle_a_reg_number", "signatures_confirmed"}
+        for field in structural:
+            assert field not in _FIELDS_NEEDING_REFORMULATION

@@ -2,6 +2,10 @@
 Step 1: Stateless fact collection and early exit logic.
 Collects minimal facts to determine if Europrotocol is applicable.
 Supports flexible input (multiple slots per message) and context passing.
+
+Исправления:
+  - _try_prefill_fields вызывается только если len(query) >= _PREFILL_MIN_LENGTH,
+    чтобы не тратить токены на короткие ответы типа "нет", "2", "да".
 """
 
 from __future__ import annotations
@@ -26,6 +30,10 @@ SLOT_ORDER = [
     "osago_both",
     "disagreement",
 ]
+
+# Минимальная длина сообщения для запуска prefill-извлечения полей step2.
+# Короткие ответы ("нет", "2", "да") не содержат данных для протокола.
+_PREFILL_MIN_LENGTH = 30
 
 _SLOT_EXTRACTION_PROMPT = """\
 Извлеки факты о ДТП из сообщения пользователя.
@@ -155,13 +163,17 @@ _PREFILL_EXTRACTION_PROMPT = """\
 
 Сообщение пользователя: "{message}"
 """
-# Ответ: {{}} только так, иначе выдаёт ошибку
+
 
 def _try_prefill_fields(giga: GigaChat, message: str) -> dict:
     """
     Лёгкий вызов LLM для извлечения очевидных полей step2 из одного
-    сообщения step1. При люб ой ошибке возвращает пустой dict -
-    не блокирует основной pipeline.
+    сообщения step1.
+
+    Вызывается только если len(message) >= _PREFILL_MIN_LENGTH —
+    короткие ответы ("нет", "2") заведомо не содержат данных протокола.
+
+    При любой ошибке возвращает пустой dict — не блокирует основной pipeline.
     """
     prompt = _PREFILL_EXTRACTION_PROMPT.format(message=message)
     try:
@@ -488,13 +500,11 @@ def _try_simple_extraction(message: str, current_slot: str) -> dict:
     text = message.strip().lower().rstrip("!.,?")
     bool_slots = {"safety_confirmed", "emergency_sign", "victims", "osago_both", "disagreement"}
 
-    # Разбиваем сообщение на части (по запятым и союзам) для обработки нескольких фактов
     parts = [p.strip() for p in re.split(r'[,;]| и | но | а ', text) if p.strip()]
 
     result = {}
 
     for part in parts:
-        # Маркеры для victims (пострадавшие)
         victims_markers = ["пострадавш", "ранен", "травм", "жертв"]
         if any(m in part for m in victims_markers):
             if part in _SIMPLE_NO or part.startswith("нет ") or " нет" in part or "0" in part:
@@ -503,7 +513,6 @@ def _try_simple_extraction(message: str, current_slot: str) -> dict:
                 result["victims"] = True
             continue
 
-        # Маркеры для osago_both (ОСАГО)
         osago_markers = ["осаго", "полис", "страховк"]
         if any(m in part for m in osago_markers):
             if part in _SIMPLE_NO or part.startswith("нет "):
@@ -512,7 +521,6 @@ def _try_simple_extraction(message: str, current_slot: str) -> dict:
                 result["osago_both"] = True
             continue
 
-        # Маркеры для safety_confirmed (безопасность)
         safety_markers = ["пожар", "взрыв", "угроз", "бензин", "топлив", "искр"]
         if any(m in part for m in safety_markers):
             if part in _SIMPLE_NO or part.startswith("нет "):
@@ -521,19 +529,16 @@ def _try_simple_extraction(message: str, current_slot: str) -> dict:
                 result["safety_confirmed"] = True
             continue
 
-        # Маркеры для emergency_sign (аварийка/знак)
         emergency_markers = ["аварийк", "знак", "фонарь", "мигал"]
         if any(m in part for m in emergency_markers):
             if part in _SIMPLE_NO or part.startswith("нет "):
                 result["emergency_sign"] = False
             elif part in _SIMPLE_YES or part.startswith("есть "):
                 result["emergency_sign"] = True
-            # Обработка случая "знак выставил" без явного "да/нет"
             elif "выставил" in part or "включил" in part or "поставил" in part:
                 result["emergency_sign"] = True
             continue
 
-        # Маркеры для disagreement (разногласия/спор)
         disagreement_markers = ["спор", "разноглас", "не соглас", "вина", "кто прав"]
         if any(m in part for m in disagreement_markers):
             if part in _SIMPLE_NO or part.startswith("нет "):
@@ -542,7 +547,6 @@ def _try_simple_extraction(message: str, current_slot: str) -> dict:
                 result["disagreement"] = True
             continue
 
-    # Если ничего не извлекли по маркерам, используем общий подход по текущему слоту
     if not result and current_slot in bool_slots:
         if text in _SIMPLE_YES or text.startswith("есть "):
             return {current_slot: True}
@@ -576,8 +580,6 @@ def process_step1_with_llm(
     Обрабатывает один шаг сбора фактов.
     Возвращает StepResponse с обновлёнными слотами и следующим действием.
     """
-    # Извлекаем и удаляем накопленный prefill из входящих слотов,
-    # чтобы _init_slots не скопировал его в merged как обычный слот.
     accumulated_prefill: dict = dict(current_slots.get("_prefilled", {}))
     current_slots_clean = {k: v for k, v in current_slots.items()
                            if k != "_prefilled"}
@@ -587,7 +589,6 @@ def process_step1_with_llm(
         (k for k in SLOT_ORDER if merged.get(k) is None), None
     )
 
-    # Сначала детерминированное извлечение (быстро, без токенов)
     had_error = False
     try:
         result = _extract_slots_llm(
@@ -600,17 +601,18 @@ def process_step1_with_llm(
 
     print(f"[step1] slot={next_slot_before}, extracted={result}")
 
-    # Лёгкое извлечение данных для step2 из текущего сообщения
-    new_prefill = _try_prefill_fields(giga, query)
-    for k, v in new_prefill.items():
-        if k not in accumulated_prefill:
-            accumulated_prefill[k] = v
+    # Prefill: запускаем только если сообщение достаточно длинное.
+    # Короткие ответы ("нет", "2", "да") заведомо не содержат данных протокола.
+    if len(query.strip()) >= _PREFILL_MIN_LENGTH:
+        new_prefill = _try_prefill_fields(giga, query)
+        for k, v in new_prefill.items():
+            if k not in accumulated_prefill:
+                accumulated_prefill[k] = v
 
     for k, v in result.items():
         if v is not None:
             merged[k] = v
 
-    # Проверка стоп-факторов
     stop = _check_early_exit_step1(merged)
     if stop:
         _, instruction = stop
@@ -622,7 +624,6 @@ def process_step1_with_llm(
             prefilled_fields=accumulated_prefill,
         )
 
-    # Активация подрежима помощи при разногласиях
     if merged.get("disagreement") is True and not merged.get("disagreement_help_offered"):
         merged["disagreement_help_offered"] = True
         merged["disagreement_help_active"] = True
@@ -638,7 +639,6 @@ def process_step1_with_llm(
             prefilled_fields=accumulated_prefill,
         )
 
-    # Проверка завершения сбора слотов
     empty = _get_empty_slots(merged)
     if not empty:
         return StepResponse(

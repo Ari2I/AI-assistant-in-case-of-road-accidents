@@ -6,6 +6,10 @@
   1. При первом входе — шаблонная сводка с ключевыми пунктами.
   2. Далее — RAG-консультант, отвечает на вопросы по заполнению.
   3. Детектирует завершение: триггер-слово → LLM-проверка контекста → STEP3.
+
+Исправления:
+  - Флаг первого входа хранится в collected_fields["fill_external_entered"],
+    а не определяется по сканированию истории (хрупкий подход).
 """
 
 from __future__ import annotations
@@ -220,18 +224,17 @@ def process_fill_external(
     Способ заполнения хранится бэкендом в slots["fill_method"]:
       "app_external" — стороннее приложение
       "paper"        — бумажный бланк (по умолчанию)
+
+    Флаг первого входа хранится в collected_fields["fill_external_entered"].
     """
     method = slots.get("fill_method", "paper")
 
-    # Первый вход — шаблонная сводка.
-    # Определяем по истории: если ни одно из последних сообщений агента
-    # не начинается со сводки — значит, вход первый.
-    is_first_entry = not any(
-        h.get("answer", "").startswith("Хорошо, заполняйте")
-        for h in history[-5:]
-    )
+    # Первый вход определяется по флагу в collected_fields, а не по истории.
+    # История может быть длинной или изменить формат — флаг надёжнее.
+    is_first_entry = not collected_fields.get("fill_external_entered")
 
     if is_first_entry:
+        collected_fields["fill_external_entered"] = True
         entry_text = (
             _ENTRY_MESSAGE_APP if method == "app_external"
             else _ENTRY_MESSAGE_PAPER

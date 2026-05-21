@@ -1,12 +1,17 @@
 """
 Pipeline v4.5
 
-Изменения vs v4.4:
-  - RAG для вопросов пользователя в step1 и step2:
-    детерминированная детекция вопроса → отдельный LLM-вызов с RAG-контекстом →
-    ответ добавляется перед вопросом агента
-  - step1 использует категорию "general_questions" (широкий охват)
-  - step2 использует категорию "filling_europrotocol"
+Исправления v4.5.1:
+  - rate_answer: переданный feedback_db теперь действительно используется
+    при сохранении хорошего Q&A (раньше параметр объявлялся, но игнорировался).
+
+Исправления v4.5.2:
+  - _make_giga(): один экземпляр GigaChat создаётся в run_agent и передаётся
+    параметром во все вложенные функции. Раньше каждый _handle_with_error_guard
+    создавал отдельное TCP-соединение, итого 2–3 соединения на один запрос.
+  - _handle_with_error_guard переименован в _safe_call и больше не создаёт giga.
+  - _answer_step_question, _inject_rag_if_question, _run_consultant,
+    _route_by_step — принимают giga как параметр.
 """
 
 from gigachat import GigaChat
@@ -69,6 +74,7 @@ _QUESTION_STARTS: tuple[str, ...] = (
     "нужно ", "обязательно ", "куда ", "где ", "кто ", "чем ",
     "должен ", "должна ", "надо ", "стоит ", "следует ",
     "расскажи", "объясни", "поясни", "сколько ",
+    "правильно ли", "верно ли", "обязан ли", "нужно ли",
 )
 
 _STEP_QUESTION_SYSTEM = """\
@@ -91,6 +97,7 @@ def _looks_like_question(query: str) -> bool:
 
 
 def _answer_step_question(
+    giga: GigaChat,
     query: str,
     db,
     feedback_db,
@@ -98,30 +105,30 @@ def _answer_step_question(
 ) -> str | None:
     """
     Отвечает на вопрос пользователя через RAG.
-    Вызывается только если _looks_like_question() вернул True.
+    Использует переданный экземпляр giga — не создаёт новый.
     При любой ошибке возвращает None — не блокирует основной flow.
     """
     try:
         context = get_context_for_category(db, feedback_db, query, category)
-        with _make_giga() as giga:
-            payload = Chat(
-                messages=[
-                    Messages(
-                        role=MessagesRole.SYSTEM,
-                        content=_STEP_QUESTION_SYSTEM.format(context=context),
-                    ),
-                    Messages(role=MessagesRole.USER, content=query),
-                ],
-                temperature=0.1,
-            )
-            response = giga.chat(payload)
-            return response.choices[0].message.content.strip()
+        payload = Chat(
+            messages=[
+                Messages(
+                    role=MessagesRole.SYSTEM,
+                    content=_STEP_QUESTION_SYSTEM.format(context=context),
+                ),
+                Messages(role=MessagesRole.USER, content=query),
+            ],
+            temperature=0.1,
+        )
+        response = giga.chat(payload)
+        return response.choices[0].message.content.strip()
     except Exception as e:
         print(f"[core] step question error: {e}")
         return None
 
 
 def _inject_rag_if_question(
+    giga: GigaChat,
     query: str,
     step_result: dict,
     db,
@@ -131,13 +138,14 @@ def _inject_rag_if_question(
     """
     Если запрос содержит вопрос и шаг ещё не завершён —
     добавляет RAG-ответ перед вопросом агента.
+    Использует переданный экземпляр giga.
     """
     if (
         _looks_like_question(query)
         and not step_result.get("step_completed")
         and step_result.get("answer")
     ):
-        rag_answer = _answer_step_question(query, db, feedback_db, category)
+        rag_answer = _answer_step_question(giga, query, db, feedback_db, category)
         if rag_answer:
             step_result = dict(step_result)
             step_result["answer"] = (
@@ -160,26 +168,40 @@ def run_agent(
     feedback_db=None,
     disagreement_db=None,
 ) -> dict:
+    """
+    Главная точка входа агента.
+
+    Создаёт ОДИН экземпляр GigaChat на весь вызов и передаёт его
+    во все вложенные функции. Это предотвращает создание 2–3 отдельных
+    TCP-соединений на один запрос пользователя.
+    """
     history = history or []
     db = db or get_main_db()
     feedback_db = feedback_db or get_feedback_db()
     disagreement_db = disagreement_db or get_disagreement_db()
 
+    # Шаблонные ответы не требуют LLM — возвращаем до создания соединения
     if current_step is None or current_step == Step.CONSULTANT_ONLY:
         template_answer = match_template(query)
         if template_answer:
             return _ok(template_answer, "template", None)
 
-    return _route_by_step(
-        query=query,
-        current_step=current_step,
-        history=history,
-        slots=slots or {},
-        collected_fields=collected_fields or {},
-        db=db,
-        feedback_db=feedback_db,
-        disagreement_db=disagreement_db,
-    )
+    try:
+        with _make_giga() as giga:
+            return _route_by_step(
+                giga=giga,
+                query=query,
+                current_step=current_step,
+                history=history,
+                slots=slots or {},
+                collected_fields=collected_fields or {},
+                db=db,
+                feedback_db=feedback_db,
+                disagreement_db=disagreement_db,
+            )
+    except Exception as e:
+        print(f"[core] run_agent error: {e}")
+        return _step_error_response()
 
 
 def rate_answer(
@@ -188,11 +210,19 @@ def rate_answer(
     rating: int,
     feedback_db=None,
 ) -> dict:
+    """
+    Оценивает качество ответа агента с помощью AI-критика.
+    При оценке пользователя >= 4 и оценке критика >= 4 сохраняет Q&A
+    в базу дообучения.
+
+    rate_answer вызывается отдельно от run_agent, поэтому создаёт
+    собственное соединение — это нормально.
+    """
     try:
         with _make_giga() as giga:
             score, comment = critic_rate_answer(giga, query, answer)
         if rating >= 4 and score >= 4:
-            save_good_qa(query, answer)
+            save_good_qa(query, answer, db=feedback_db)
         return {"critic_score": score, "critic_comment": comment}
     except Exception as e:
         print(f"[core] rate_answer error: {e}")
@@ -204,6 +234,7 @@ def rate_answer(
 # ---------------------------------------------------------------------------
 
 def _route_by_step(
+    giga: GigaChat,
     query: str,
     current_step: str | None,
     history: list,
@@ -213,25 +244,27 @@ def _route_by_step(
     feedback_db,
     disagreement_db,
 ) -> dict:
+    """Маршрутизирует запрос на нужный шаг. Принимает giga как параметр."""
 
     # --- STEP 1: сбор фактов + RAG для вопросов ---
     if current_step == Step.STEP1:
         if slots.get("disagreement_help_active"):
-            return _handle_with_error_guard(
-                lambda giga: _step_response_to_dict(
+            step_result = _safe_call(
+                lambda: _step_response_to_dict(
                     run_disagreement_help(giga, query, history, slots, disagreement_db),
                     "step1",
                 ),
                 "disagreement_help",
             )
-        step_result = _handle_with_error_guard(
-            lambda giga: _step_response_to_dict(
-                process_step1_with_llm(giga, query, history, slots),
+        else:
+            step_result = _safe_call(
+                lambda: _step_response_to_dict(
+                    process_step1_with_llm(giga, query, history, slots),
+                    "step1",
+                ),
                 "step1",
-            ),
-            "step1",
-        )
-        return _inject_rag_if_question(query, step_result, db, feedback_db, "general_questions")
+            )
+        return _inject_rag_if_question(giga, query, step_result, db, feedback_db, "general_questions")
 
     # --- OFFER_EUROPROTOCOL + OFFER_METHOD ---
     if current_step in (Step.OFFER_EUROPROTOCOL, Step.OFFER_METHOD):
@@ -239,19 +272,19 @@ def _route_by_step(
 
     # --- STEP 2: заполнение протокола + RAG для вопросов ---
     if current_step == Step.STEP2:
-        step_result = _handle_with_error_guard(
-            lambda giga: _step_response_to_dict(
+        step_result = _safe_call(
+            lambda: _step_response_to_dict(
                 process_step2_with_llm(giga, query, history, slots, collected_fields),
                 "step2",
             ),
             "step2",
         )
-        return _inject_rag_if_question(query, step_result, db, feedback_db, "filling_europrotocol")
+        return _inject_rag_if_question(giga, query, step_result, db, feedback_db, "filling_europrotocol")
 
     # --- FILL_EXTERNAL ---
     if current_step == Step.FILL_EXTERNAL:
-        return _handle_with_error_guard(
-            lambda giga: _step_response_to_dict(
+        return _safe_call(
+            lambda: _step_response_to_dict(
                 process_fill_external(
                     giga, query, history, slots, collected_fields, db, feedback_db
                 ),
@@ -262,20 +295,20 @@ def _route_by_step(
 
     # --- STEP 3 ---
     if current_step == Step.STEP3:
-        return _handle_with_error_guard(
-            lambda giga: _step_response_to_dict(
+        return _safe_call(
+            lambda: _step_response_to_dict(
                 process_step3(giga, query, history, collected_fields, db, feedback_db),
                 "step3",
             ),
             "step3",
         )
 
-    # --- Консультант ---
+    # --- Консультант (включая consultant_only) ---
     if current_step == Step.CONSULTANT_ONLY:
-        return _run_consultant(query, history, db, feedback_db)
+        return _run_consultant(giga, query, history, db, feedback_db)
 
     print(f"[core] WARNING: unknown current_step={current_step!r}, treating as consultant")
-    return _run_consultant(query, history, db, feedback_db)
+    return _run_consultant(giga, query, history, db, feedback_db)
 
 
 # ---------------------------------------------------------------------------
@@ -283,6 +316,7 @@ def _route_by_step(
 # ---------------------------------------------------------------------------
 
 def _run_offer_europrotocol(query: str, history: list, slots: dict) -> dict:
+    """Не требует giga — только детерминированная логика выбора метода."""
     q = query.strip().lower()
 
     if any(kw in q for kw in _KW_REFUSE):
@@ -372,23 +406,23 @@ def _run_offer_europrotocol(query: str, history: list, slots: dict) -> dict:
 # Консультант
 # ---------------------------------------------------------------------------
 
-def _run_consultant(query: str, history: list, db, feedback_db) -> dict:
+def _run_consultant(giga: GigaChat, query: str, history: list, db, feedback_db) -> dict:
+    """Использует переданный giga — не создаёт новый."""
     try:
-        with _make_giga() as giga:
-            classifier_history = build_history(history, component="classifier")
-            meta = meta_classify(giga, query, classifier_history)
-            category = meta.get("category", "first_steps")
-            block = meta.get("block", 0)
+        classifier_history = build_history(history, component="classifier")
+        meta = meta_classify(giga, query, classifier_history)
+        category = meta.get("category", "first_steps")
+        block = meta.get("block", 0)
 
-            context = get_context_for_category(db, feedback_db, query, category)
-            algorithm_slice = get_algorithm_slice(block) if block >= 0 else ""
-            generator_history = build_history(
-                history, component="generator", category=category
-            )
-            plan = {"category": category, "block": block}
-            answer, _ = _generate_with_selfcheck(
-                giga, query, context, plan, algorithm_slice, generator_history
-            )
+        context = get_context_for_category(db, feedback_db, query, category)
+        algorithm_slice = get_algorithm_slice(block) if block >= 0 else ""
+        generator_history = build_history(
+            history, component="generator", category=category
+        )
+        plan = {"category": category, "block": block}
+        answer, _ = _generate_with_selfcheck(
+            giga, query, context, plan, algorithm_slice, generator_history
+        )
         return _ok(answer, "llm", category)
     except Exception as e:
         print(f"[core] consultant error: {e}")
@@ -442,10 +476,14 @@ def _should_run_selfcheck(answer: str) -> bool:
     return any(marker in answer.lower() for marker in _UNCERTAINTY_MARKERS)
 
 
-def _handle_with_error_guard(handler, step_name: str) -> dict:
+def _safe_call(handler, step_name: str) -> dict:
+    """
+    Вызывает handler() с обработкой ошибок.
+    В отличие от старого _handle_with_error_guard НЕ создаёт новый giga —
+    giga уже передан в замыкание через lambda.
+    """
     try:
-        with _make_giga() as giga:
-            return handler(giga)
+        return handler()
     except Exception as e:
         print(f"[core] {step_name} error: {e}")
         return _step_error_response()
