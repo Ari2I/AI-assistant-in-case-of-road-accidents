@@ -29,6 +29,7 @@ from evaluation.critic import critic_rate_answer
 from rag.feedback_db import save_good_qa
 from rag.db_manager import get_main_db, get_feedback_db, get_disagreement_db
 from templates.matcher import match_template
+from agent.input_filter import filter_input, INJECTION_BLOCKED_MSG, OFFTOPIC_BLOCKED_MSG
 from agent.step2_europrotocol import process_step2_with_llm, process_step2_check
 from agent.step1_stateless import process_step1_with_llm
 from agent.disagreement_helper import run_disagreement_help
@@ -179,6 +180,14 @@ def run_agent(
     db = db or get_main_db()
     feedback_db = feedback_db or get_feedback_db()
     disagreement_db = disagreement_db or get_disagreement_db()
+
+    is_blocked, reason, query = filter_input(query)
+    if is_blocked:
+        return _ok(
+            INJECTION_BLOCKED_MSG if reason == "injection" else OFFTOPIC_BLOCKED_MSG,
+            "filter",
+            None,
+        )
 
     # Шаблонные ответы не требуют LLM — возвращаем до создания соединения
     if current_step is None or current_step == Step.CONSULTANT_ONLY:
@@ -406,11 +415,22 @@ def _run_offer_europrotocol(query: str, history: list, slots: dict) -> dict:
 # Консультант
 # ---------------------------------------------------------------------------
 
+# СТАЛО:
 def _run_consultant(giga: GigaChat, query: str, history: list, db, feedback_db) -> dict:
     """Использует переданный giga — не создаёт новый."""
     try:
         classifier_history = build_history(history, component="classifier")
         meta = meta_classify(giga, query, classifier_history)
+
+        # Блокируем нерелевантные запросы — LLM явно пометил как off-topic
+        if not meta.get("relevant", True):
+            return _ok(
+                "Я ДТП-ассистент и специализируюсь только на помощи при дорожно-транспортных "
+                "происшествиях и вопросах ОСАГО. Опишите вашу ситуацию — помогу разобраться.",
+                "filter",
+                None,
+            )
+
         category = meta.get("category", "first_steps")
         block = meta.get("block", 0)
 
