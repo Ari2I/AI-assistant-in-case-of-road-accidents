@@ -1,17 +1,12 @@
 """
-Pipeline v4.5
+Pipeline v4.5.3
 
-Исправления v4.5.1:
-  - rate_answer: переданный feedback_db теперь действительно используется
-    при сохранении хорошего Q&A (раньше параметр объявлялся, но игнорировался).
-
-Исправления v4.5.2:
-  - _make_giga(): один экземпляр GigaChat создаётся в run_agent и передаётся
-    параметром во все вложенные функции. Раньше каждый _handle_with_error_guard
-    создавал отдельное TCP-соединение, итого 2–3 соединения на один запрос.
-  - _handle_with_error_guard переименован в _safe_call и больше не создаёт giga.
-  - _answer_step_question, _inject_rag_if_question, _run_consultant,
-    _route_by_step — принимают giga как параметр.
+Изменения v4.5.3:
+  - Единая предпроверка run_pre_check() для КАЖДОГО запроса до маршрутизации:
+    блокирует оффтопик и промпт-инъекции через LLM.
+  - Санитизация и константы сообщений перенесены в agent/pre_check.py.
+  - input_filter.py удалён — его функции поглощены pre_check.py.
+  - Удалена дублирующая проверка relevant из _run_consultant().
 """
 
 from gigachat import GigaChat
@@ -24,12 +19,12 @@ from agent.retriever import get_context_for_category
 from agent.generator import generate_answer
 from agent.algorithm import load_algorithm, get_algorithm_slice
 from agent.history import build_history
+from agent.pre_check import run_pre_check, sanitize, INJECTION_BLOCKED_MSG, OFFTOPIC_BLOCKED_MSG
 from evaluation.self_check import improve_answer
 from evaluation.critic import critic_rate_answer
 from rag.feedback_db import save_good_qa
 from rag.db_manager import get_main_db, get_feedback_db, get_disagreement_db
 from templates.matcher import match_template
-from agent.input_filter import filter_input, INJECTION_BLOCKED_MSG, OFFTOPIC_BLOCKED_MSG
 from agent.step2_europrotocol import process_step2_with_llm, process_step2_check
 from agent.step1_stateless import process_step1_with_llm
 from agent.disagreement_helper import run_disagreement_help
@@ -90,7 +85,6 @@ _STEP_QUESTION_SYSTEM = """\
 
 
 def _looks_like_question(query: str) -> bool:
-    """Детерминированная проверка — содержит ли сообщение вопрос."""
     q = query.strip().lower()
     if "?" in q:
         return True
@@ -104,11 +98,6 @@ def _answer_step_question(
     feedback_db,
     category: str,
 ) -> str | None:
-    """
-    Отвечает на вопрос пользователя через RAG.
-    Использует переданный экземпляр giga — не создаёт новый.
-    При любой ошибке возвращает None — не блокирует основной flow.
-    """
     try:
         context = get_context_for_category(db, feedback_db, query, category)
         payload = Chat(
@@ -136,11 +125,6 @@ def _inject_rag_if_question(
     feedback_db,
     category: str,
 ) -> dict:
-    """
-    Если запрос содержит вопрос и шаг ещё не завершён —
-    добавляет RAG-ответ перед вопросом агента.
-    Использует переданный экземпляр giga.
-    """
     if (
         _looks_like_question(query)
         and not step_result.get("step_completed")
@@ -172,22 +156,20 @@ def run_agent(
     """
     Главная точка входа агента.
 
-    Создаёт ОДИН экземпляр GigaChat на весь вызов и передаёт его
-    во все вложенные функции. Это предотвращает создание 2–3 отдельных
-    TCP-соединений на один запрос пользователя.
+    Каждый запрос проходит:
+      1. Санитизацию (без LLM)
+      2. Единую предпроверку run_pre_check() — оффтопик и инъекции (LLM)
+      3. Маршрутизацию на нужный шаг
     """
     history = history or []
     db = db or get_main_db()
     feedback_db = feedback_db or get_feedback_db()
     disagreement_db = disagreement_db or get_disagreement_db()
 
-    is_blocked, reason, query = filter_input(query)
-    if is_blocked:
-        return _ok(
-            INJECTION_BLOCKED_MSG if reason == "injection" else OFFTOPIC_BLOCKED_MSG,
-            "filter",
-            None,
-        )
+    # Санитизация: NFKC, LLM-токены, управляющие символы (без LLM)
+    query = sanitize(query)
+    if not query:
+        return _step_error_response()
 
     # Шаблонные ответы не требуют LLM — возвращаем до создания соединения
     if current_step is None or current_step == Step.CONSULTANT_ONLY:
@@ -197,6 +179,19 @@ def run_agent(
 
     try:
         with _make_giga() as giga:
+
+            # --- Единая предпроверка: оффтопик + инъекции ---
+            # Запускается для КАЖДОГО запроса до любой маршрутизации.
+            classifier_history = build_history(history, component="classifier")
+            check = run_pre_check(giga, query, classifier_history)
+            if check.blocked:
+                msg = (
+                    INJECTION_BLOCKED_MSG
+                    if check.reason == "injection"
+                    else OFFTOPIC_BLOCKED_MSG
+                )
+                return _ok(msg, "filter", None)
+
             return _route_by_step(
                 giga=giga,
                 query=query,
@@ -219,14 +214,6 @@ def rate_answer(
     rating: int,
     feedback_db=None,
 ) -> dict:
-    """
-    Оценивает качество ответа агента с помощью AI-критика.
-    При оценке пользователя >= 4 и оценке критика >= 4 сохраняет Q&A
-    в базу дообучения.
-
-    rate_answer вызывается отдельно от run_agent, поэтому создаёт
-    собственное соединение — это нормально.
-    """
     try:
         with _make_giga() as giga:
             score, comment = critic_rate_answer(giga, query, answer)
@@ -325,7 +312,6 @@ def _route_by_step(
 # ---------------------------------------------------------------------------
 
 def _run_offer_europrotocol(query: str, history: list, slots: dict) -> dict:
-    """Не требует giga — только детерминированная логика выбора метода."""
     q = query.strip().lower()
 
     if any(kw in q for kw in _KW_REFUSE):
@@ -376,7 +362,6 @@ def _run_offer_europrotocol(query: str, history: list, slots: dict) -> dict:
             "final_json": None,
         }
 
-    # Первый вход — показываем лимиты + варианты
     check_result = process_step2_check(slots, has_app=True)
     base = check_result.limits.get("base", 100_000)
 
@@ -415,24 +400,17 @@ def _run_offer_europrotocol(query: str, history: list, slots: dict) -> dict:
 # Консультант
 # ---------------------------------------------------------------------------
 
-# СТАЛО:
 def _run_consultant(giga: GigaChat, query: str, history: list, db, feedback_db) -> dict:
-    """Использует переданный giga — не создаёт новый."""
+    """
+    Режим консультанта. Оффтопик уже отсеян предпроверкой run_pre_check(),
+    поэтому здесь только классификация и генерация ответа.
+    """
     try:
         classifier_history = build_history(history, component="classifier")
         meta = meta_classify(giga, query, classifier_history)
 
-        # Блокируем нерелевантные запросы — LLM явно пометил как off-topic
-        if not meta.get("relevant", True):
-            return _ok(
-                "Я ДТП-ассистент и специализируюсь только на помощи при дорожно-транспортных "
-                "происшествиях и вопросах ОСАГО. Опишите вашу ситуацию — помогу разобраться.",
-                "filter",
-                None,
-            )
-
         category = meta.get("category", "first_steps")
-        block = meta.get("block", 0)
+        block    = meta.get("block", 0)
 
         context = get_context_for_category(db, feedback_db, query, category)
         algorithm_slice = get_algorithm_slice(block) if block >= 0 else ""
@@ -497,11 +475,6 @@ def _should_run_selfcheck(answer: str) -> bool:
 
 
 def _safe_call(handler, step_name: str) -> dict:
-    """
-    Вызывает handler() с обработкой ошибок.
-    В отличие от старого _handle_with_error_guard НЕ создаёт новый giga —
-    giga уже передан в замыкание через lambda.
-    """
     try:
         return handler()
     except Exception as e:
