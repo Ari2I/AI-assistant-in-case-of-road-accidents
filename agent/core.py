@@ -404,10 +404,18 @@ def _run_consultant(giga: GigaChat, query: str, history: list, db, feedback_db) 
     """
     Режим консультанта. Оффтопик уже отсеян предпроверкой run_pre_check(),
     поэтому здесь только классификация и генерация ответа.
+
+    ДОПОЛНИТЕЛЬНАЯ ЗАЩИТА: если meta_classify вернул relevant=False,
+    блокируем запрос как оффтопик.
     """
     try:
         classifier_history = build_history(history, component="classifier")
         meta = meta_classify(giga, query, classifier_history)
+
+        # Дополнительная проверка на релевантность
+        if not meta.get("relevant", True):
+            print(f"[core] consultant blocked irrelevant: {query[:80]!r}")
+            return _ok(OFFTOPIC_BLOCKED_MSG, "filter", None)
 
         category = meta.get("category", "first_steps")
         block    = meta.get("block", 0)
