@@ -33,8 +33,8 @@ from agent.disagreement_helper import run_disagreement_help
 from agent.meta_classifier import meta_classify
 from templates.matcher import match_template
 from rag.db_manager import get_main_db, get_feedback_db, get_disagreement_db
-from profile.scanner import scan_document
-from profile.utils import image_to_base64, find_images, ensure_test_docs_dir
+from profile.scanner import scan_to_profile
+from profile.utils import find_images, ensure_test_docs_dir
 
 RESET  = "\033[0m"
 BOLD   = "\033[1m"
@@ -75,9 +75,9 @@ def error_msg(text: str) -> None:
 
 
 def section(title: str) -> None:
-    print(f"\n{c(hr(), BLUE)}")
+    print(f"\n{c(hr('═'), BLUE)}")
     print(c(f"  {title}", BOLD))
-    print(c(hr(), BLUE))
+    print(c(hr('═'), BLUE))
 
 
 def show_json(data: dict, label: str = "JSON") -> None:
@@ -119,10 +119,6 @@ def maybe_rate(query: str, answer: str, feedback_db) -> None:
 # ===========================================================================
 # РЕЖИМ 1: Полный pipeline
 # ===========================================================================
-
-def _map_slots_to_fields(slots: dict) -> dict:
-    return {}
-
 
 def _print_pipeline_state(current_step: str, slots: dict, collected_fields: dict) -> None:
     print(f"\n{c(hr('─', 50), GRAY)}")
@@ -180,7 +176,11 @@ def run_full_pipeline() -> None:
         if response.get("collected_fields") is not None:
             collected_fields = response["collected_fields"]
 
-        system_msg(f"source={response.get('source')} | step_completed={response.get('step_completed')} | next_step={response.get('next_step')}")
+        system_msg(
+            f"source={response.get('source')} | "
+            f"step_completed={response.get('step_completed')} | "
+            f"next_step={response.get('next_step')}"
+        )
 
         if answer:
             maybe_rate(query, answer, feedback_db)
@@ -261,7 +261,11 @@ def run_module_step1() -> None:
             slots = dict(result.slots)
             history.append({"query": query, "answer": result.answer or ""})
             system_msg(f"step_completed={result.step_completed} | next_step={result.next_step}")
-            show_json({k: v for k, v in slots.items() if not k.startswith("_") and k != "disagreement_slots"}, "Слоты")
+            show_json(
+                {k: v for k, v in slots.items()
+                 if not k.startswith("_") and k != "disagreement_slots"},
+                "Слоты"
+            )
 
             if result.step_completed:
                 system_msg(f"✅ Шаг завершён → {result.next_step}")
@@ -389,7 +393,11 @@ def run_module_step3() -> None:
 
             collected_fields = dict(result.collected_fields or {})
             history.append({"query": query, "answer": result.answer or ""})
-            system_msg(f"step_completed={result.step_completed} | next_step={result.next_step} | phase={collected_fields.get('step3_phase', 'phase1')}")
+            system_msg(
+                f"step_completed={result.step_completed} | "
+                f"next_step={result.next_step} | "
+                f"phase={collected_fields.get('step3_phase', 'phase1')}"
+            )
 
             if result.final_json:
                 show_json(result.final_json, "Обращение")
@@ -448,7 +456,11 @@ def run_module_disagreement() -> None:
                 system_msg(f"Заполнено слотов разногласий: {len(filled)}")
                 show_json(filled, "Слоты разногласий")
 
-            system_msg(f"step_completed={result.step_completed} | next_step={result.next_step} | disagreement_help_active={slots.get('disagreement_help_active')}")
+            system_msg(
+                f"step_completed={result.step_completed} | "
+                f"next_step={result.next_step} | "
+                f"disagreement_help_active={slots.get('disagreement_help_active')}"
+            )
 
             if result.step_completed:
                 system_msg(f"✅ Режим завершён → {result.next_step}")
@@ -517,7 +529,7 @@ def run_module_templates() -> None:
 def run_module_consultant() -> None:
     section("МОДУЛЬ: Консультант (general mode)")
     print(c("Режим: current_step=None, полный pipeline без шагов.", GRAY))
-    print(c("Команды: 'выход' | 'состояние'\n", GRAY))
+    print(c("Команды: 'выход'\n", GRAY))
 
     history: list[dict] = []
     feedback_db = get_feedback_db()
@@ -544,12 +556,6 @@ def run_module_consultant() -> None:
 # ===========================================================================
 # РЕЖИМ 9: Сканер документов
 # ===========================================================================
-
-_DOC_TYPE_MENU: list[tuple[str, str, str]] = [
-    ("1", "osago",          "Полис ОСАГО"),
-    ("2", "driver_license", "Водительское удостоверение"),
-    ("3", "sts",            "СТС / ПТС"),
-]
 
 _TEST_DOCS_DIR = "test_docs"
 
@@ -587,81 +593,54 @@ def _select_image() -> str | None:
         return None
 
 
-def _select_doc_type() -> str | None:
-    """Показывает меню выбора типа документа."""
-    print(f"\n{c('  Тип документа:', BOLD)}")
-    for key, doc_type, label in _DOC_TYPE_MENU:
-        print(f"  {c(key, CYAN)}. {label}")
-
-    choice = input(f"\n{c('Выберите тип (или Enter для отмены):', CYAN)} ").strip()
-    if not choice:
-        return None
-
-    for key, doc_type, label in _DOC_TYPE_MENU:
-        if choice == key:
-            return doc_type
-
-    error_msg(f"Неверный выбор: {choice!r}")
-    return None
-
-
 def run_module_scanner() -> None:
     section("МОДУЛЬ: Сканер документов")
     print(c(
         f"  Кладёшь фото в папку  {c(_TEST_DOCS_DIR + '/', CYAN)}\n"
-        f"  Выбираешь файл и тип документа → сканер извлекает поля.\n"
-        f"  Поля возвращаются в формате collected_fields (step2).\n",
+        f"  Агент сам определяет тип документа и извлекает поля профиля.\n"
+        f"  Поддерживаемые форматы: JPEG, PNG, WEBP.\n",
         GRAY
     ))
 
     ensure_test_docs_dir(_TEST_DOCS_DIR)
 
     while True:
-        # Выбор фото
         image_path = _select_image()
         if image_path is None:
             break
 
-        # Выбор типа документа
-        doc_type = _select_doc_type()
-        if doc_type is None:
-            break
-
-        # Конвертация в base64
-        print(f"\n{c('[система]', GRAY)} Конвертирую {image_path} → base64...")
+        print(f"\n{c('[система]', GRAY)} Сканирую документ...")
         try:
-            image_b64, media_type = image_to_base64(image_path)
-            system_msg(f"base64 готов: {len(image_b64)} символов | media_type={media_type}")
+            result = scan_to_profile(image_path)
         except (FileNotFoundError, ValueError) as e:
             error_msg(str(e))
             break
-
-        # Сканирование
-        print(f"\n{c('[система]', GRAY)} Отправляю в GigaChat Vision...")
-        try:
-            with make_giga() as giga:
-                result = scan_document(
-                    giga=giga,
-                    image_b64=image_b64,
-                    media_type=media_type,
-                    document_type=doc_type,
-                )
         except Exception as e:
-            error_msg(f"Ошибка при сканировании: {e}")
+            error_msg(f"Неожиданная ошибка: {e}")
             break
 
-        # Вывод результата
         print(f"\n{c(hr(), BLUE)}")
-        if result:
-            print(c(f"  ✅ Извлечено полей: {len(result)}", GREEN))
+        doc_type = result.get("document_type")
+
+        if doc_type:
+            type_labels = {
+                "osago":          "Полис ОСАГО",
+                "driver_license": "Водительское удостоверение",
+                "sts":            "СТС / ПТС",
+            }
+            system_msg(f"Тип документа: {c(type_labels.get(doc_type, doc_type), CYAN)}")
+
+        fields = {k: v for k, v in result.items() if k != "document_type"}
+
+        if fields:
+            print(c(f"  ✅ Извлечено полей: {len(fields)}", GREEN))
             print(c(hr(), BLUE))
-            show_json(result, "Извлечённые поля (collected_fields)")
+            show_json(fields, "Поля профиля")
         else:
             print(c("  ❌ Не удалось извлечь данные.", RED))
-            print(c("  Проверь качество фото и тип документа.", YELLOW))
+            print(c("  Проверь качество фото и убедись что документ целиком в кадре.", YELLOW))
             print(c(hr(), BLUE))
 
-        # Предложить ещё раз
         again = input(
             f"\n{c('Сканировать ещё один документ? (да/Enter для выхода):', GRAY)} "
         ).strip().lower()
@@ -682,7 +661,7 @@ MENU_ITEMS: list[tuple[str, str, Callable]] = [
     ("6", "Meta Classifier — классификация запроса",      run_module_classifier),
     ("7", "Template Matcher — шаблонные ответы",          run_module_templates),
     ("8", "Консультант — general mode",                   run_module_consultant),
-    ("9", "Сканер документов — фото → поля протокола",    run_module_scanner),
+    ("9", "Сканер документов — фото → поля профиля",      run_module_scanner),
     ("0", "Выход",                                        None),
 ]
 
