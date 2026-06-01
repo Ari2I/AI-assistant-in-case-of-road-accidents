@@ -10,6 +10,7 @@ Pipeline v4.0 — оптимизированный по токенам.
 Стало: 2-3 LLM-вызова, ~4 000-5 000 токенов
 """
 
+import os
 from gigachat import GigaChat
 
 from config import GIGA_AUTH
@@ -22,6 +23,7 @@ from evaluation.self_check import improve_answer
 from evaluation.critic import critic_rate_answer
 from rag.feedback_db import save_good_qa
 from templates.matcher import match_template
+from ocr_space_client import OCRSpaceClient  # <-- ДОБАВЛЕНО (OCR)
 
 _CONFIDENCE_THRESHOLD = 0.65
 _MAX_IMPROVE_ATTEMPTS = 2
@@ -36,12 +38,24 @@ _UNCERTAINTY_MARKERS = [
 # Алгоритм загружается один раз при старте — не читаем файл на каждый запрос
 _ALGORITHM = load_algorithm()
 
+# <-- ДОБАВЛЕНО (один экземпляр клиента OCR для всего приложения)
+_OCR_CLIENT = None
+
+def _get_ocr_client():
+    global _OCR_CLIENT
+    if _OCR_CLIENT is None:
+        api_key = os.getenv("OCR_SPACE_API_KEY")
+        if api_key:
+            _OCR_CLIENT = OCRSpaceClient(api_key)
+    return _OCR_CLIENT
+
 
 def run_agent(
     query: str,
     history: list | None = None,
     db=None,
     feedback_db=None,
+    photo_path: str | None = None,  # <-- ДОБАВЛЕНО (путь к временному файлу фото)
 ) -> dict:
     """
     Обрабатывает сообщение пользователя и возвращает ответ.
@@ -51,6 +65,7 @@ def run_agent(
         history:     история диалога [{"query": ..., "answer": ...}, ...]
         db:          основная ChromaDB (может быть None)
         feedback_db: база дообучения (может быть None)
+        photo_path:  путь к временному файлу фото (если есть)  # <-- ДОБАВЛЕНО
 
     Returns:
         {
@@ -60,6 +75,21 @@ def run_agent(
         }
     """
     history = history or []
+    
+    # <-- ДОБАВЛЕНО (OCR-обработка фото, если оно есть)
+    original_query = query
+    if photo_path and os.path.exists(photo_path):
+        ocr_client = _get_ocr_client()
+        if ocr_client:
+            extracted_text = ocr_client.from_file(photo_path)
+            if extracted_text:
+                # Добавляем распознанный текст в начало запроса
+                query = f"[Из фото документа получен текст: {extracted_text}]\n\n{original_query}"
+                print(f"[core] OCR распознал {len(extracted_text)} символов")
+            else:
+                print("[core] OCR не распознал текст")
+        else:
+            print("[core] OCR клиент не инициализирован (нет API-ключа)")
 
     # ШАГ 1: Regex-шаблоны (0 токенов, мгновенно)
     template_answer = match_template(query)
