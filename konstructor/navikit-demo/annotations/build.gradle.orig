@@ -1,0 +1,33 @@
+plugins {
+    id 'com.android.library'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'com.yandex.navikitdemo.annotations'
+    compileSdk 35
+    buildToolsVersion "35.0.0"
+
+    defaultConfig {
+        minSdk 26
+        targetSdk 35
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_21
+        targetCompatibility JavaVersion.VERSION_21
+    }
+
+    kotlinOptions {
+        jvmTarget = 21
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+}
+
+dependencies {
+    implementation "com.yandex.maps:maps.mobile@aar"
+    implementation "androidx.media3:media3-exoplayer:${rootProject.ext.exoPlayerVersion}"
+}

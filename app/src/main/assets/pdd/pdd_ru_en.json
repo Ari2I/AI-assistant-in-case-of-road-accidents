@@ -1,0 +1,44 @@
+[
+  {
+    "id": "ru_accident_injured",
+    "lang": "ru",
+    "title": "ДТП с пострадавшими",
+    "tags": ["дтп", "пострадавшие", "112", "103", "safety", "fallback"],
+    "body": "Если есть пострадавшие, водитель должен принять меры к оказанию первой помощи, вызвать скорую помощь и полицию, записать данные очевидцев, сохранить следы ДТП и обеспечить безопасность."
+  },
+  {
+    "id": "ru_europrotocol",
+    "lang": "ru",
+    "title": "Когда возможен европротокол",
+    "tags": ["европротокол", "осаго", "страховая", "без пострадавших"],
+    "body": "Европротокол возможен только без пострадавших и при выполнении условий закона об ОСАГО. Если есть спор, сомнения, признаки опьянения или серьёзные разногласия, безопаснее вызвать ГИБДД."
+  },
+  {
+    "id": "ru_photos",
+    "lang": "ru",
+    "title": "Какие фото собрать",
+    "tags": ["фото", "доказательства", "повреждения"],
+    "body": "Сфотографируйте общий план места ДТП, положение машин, номера, повреждения крупно, дорожные знаки, разметку, следы торможения, осколки, документы и полисы участников."
+  },
+  {
+    "id": "ru_conflict",
+    "lang": "ru",
+    "title": "Конфликтная ситуация",
+    "tags": ["конфликт", "разговор", "инспектор"],
+    "body": "Говорите спокойно и коротко. Не признавайте вину на месте, не подписывайте пустые или непонятные документы, фиксируйте факты и дождитесь сотрудников при необходимости."
+  },
+  {
+    "id": "en_accident_injured",
+    "lang": "en",
+    "title": "Crash with injured people",
+    "tags": ["accident", "injured", "112", "safety", "fallback"],
+    "body": "If anyone is injured, call emergency services first, secure the scene, provide reasonable first aid, preserve crash traces, and collect witness details."
+  },
+  {
+    "id": "en_europrotocol",
+    "lang": "en",
+    "title": "Simplified accident report",
+    "tags": ["insurance", "report", "no injuries"],
+    "body": "A simplified accident report is only appropriate when there are no injured people and legal insurance conditions are met. If there is conflict or doubt, call traffic police."
+  }
+]

@@ -1,0 +1,1771 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>АвтоПомощник</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --purple: #7B68AE; --purple-dark: #6B58A0; --green: #4CAF50;
+            --green-dark: #43A047; --red: #E53935; --red-dark: #C62828;
+            --bg: #F5F5F5; --white: #FFFFFF; --text: #333; --text-light: #999;
+            --border: #E0E0E0; --shadow: rgba(0,0,0,0.1); --dark-bg: #1E1E1E;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg); color: var(--text);
+            max-width: 480px; margin: 0 auto; min-height: 100vh;
+            overflow-x: hidden; position: relative;
+        }
+        .screen { display: none; min-height: 100vh; padding-bottom: 80px; }
+        .screen.active { display: flex; flex-direction: column; }
+
+        /* ===== ONBOARDING ===== */
+        .onboarding-overlay {
+            display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.6); z-index: 150;
+            justify-content: center; align-items: center;
+        }
+        .onboarding-overlay.active { display: flex; }
+        .onboarding-card {
+            background: var(--white); width: 92%; max-width: 400px;
+            border-radius: 20px; padding: 30px 24px;
+            animation: cardIn 0.4s ease; box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        @keyframes cardIn {
+            from { transform: translateY(40px) scale(0.95); opacity: 0; }
+            to { transform: translateY(0) scale(1); opacity: 1; }
+        }
+        .onboarding-card h2 { font-size: 20px; margin-bottom: 20px; text-align: center; }
+        .onboarding-card .subtitle { font-size: 13px; color: var(--text-light); text-align: center; margin-bottom: 20px; }
+        .onboarding-btn {
+            width: 100%; padding: 16px; border: none; border-radius: 14px;
+            font-size: 16px; font-weight: 600; cursor: pointer;
+            margin-bottom: 10px; color: white;
+        }
+        .onboarding-btn:active { transform: scale(0.97); }
+        .onboarding-btn.red { background: var(--red); }
+        .onboarding-btn.green { background: var(--green); }
+        .skip-link { display: block; text-align: center; color: var(--text-light); font-size: 13px; cursor: pointer; margin-top: 10px; text-decoration: underline; }
+
+        .europ-option {
+            background: var(--bg); border: 2px solid var(--border);
+            border-radius: 14px; padding: 16px; margin-bottom: 10px;
+            cursor: pointer; display: flex; align-items: center; gap: 12px;
+        }
+        .europ-option:hover { border-color: var(--purple); background: #F3E5F5; }
+        .europ-option .europ-icon {
+            width: 40px; height: 40px; border-radius: 10px;
+            display: flex; align-items: center; justify-content: center; font-size: 20px; flex-shrink: 0;
+        }
+        .europ-option .europ-icon.purple { background: #EDE7F6; }
+        .europ-option .europ-icon.blue { background: #E3F2FD; }
+        .europ-option .europ-icon.orange { background: #FFF3E0; }
+        .europ-option .europ-text { font-size: 14px; font-weight: 500; }
+
+        /* ===== EMERGENCY ===== */
+        .emergency-screen {
+            background: var(--dark-bg); min-height: 100vh; display: none;
+            flex-direction: column; align-items: center; justify-content: center;
+            padding: 30px; position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 200;
+        }
+        .emergency-screen.active { display: flex; }
+        .emergency-icon { font-size: 60px; margin-bottom: 20px; animation: emergencyPulse 1s infinite; }
+        @keyframes emergencyPulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.1); } }
+        .emergency-screen h2 { color: var(--red); font-size: 22px; margin-bottom: 8px; text-transform: uppercase; }
+        .emergency-screen .em-subtitle { color: var(--text-light); font-size: 14px; margin-bottom: 30px; text-align: center; }
+        .emergency-btn {
+            width: 100%; max-width: 280px; padding: 18px; border: none;
+            border-radius: 16px; font-size: 24px; font-weight: 700;
+            cursor: pointer; margin-bottom: 14px; color: white;
+        }
+        .emergency-btn:active { transform: scale(0.95); }
+        .emergency-btn.red-em { background: var(--red); box-shadow: 0 0 30px rgba(229,57,53,0.3); }
+        .emergency-btn.green-em { background: var(--green); box-shadow: 0 0 30px rgba(76,175,80,0.3); }
+        .emergency-footer { position: absolute; bottom: 30px; color: var(--text-light); font-size: 13px; }
+        .emergency-close-btn {
+            position: absolute; top: 20px; right: 20px;
+            background: rgba(255,255,255,0.1); border: none; color: white;
+            width: 40px; height: 40px; border-radius: 50%; font-size: 18px; cursor: pointer;
+        }
+
+        /* ===== LOGIN ===== */
+        .login-screen { justify-content: center; align-items: center; padding: 20px; background: var(--white); }
+        .login-container { width: 100%; max-width: 360px; }
+        .login-logo { text-align: center; margin-bottom: 40px; }
+        .login-logo .logo-icon {
+            width: 80px; height: 80px; background: var(--purple); border-radius: 20px;
+            margin: 0 auto 15px; display: flex; align-items: center; justify-content: center; font-size: 36px;
+        }
+        .login-logo h1 { font-size: 22px; }
+        .login-logo p { color: var(--text-light); font-size: 14px; margin-top: 5px; }
+        .login-form { display: flex; flex-direction: column; gap: 15px; }
+        .input-group { position: relative; }
+        .input-group input {
+            width: 100%; padding: 15px 18px; border: 2px solid var(--border);
+            border-radius: 12px; font-size: 16px; outline: none; transition: border-color 0.3s;
+        }
+        .input-group input:focus { border-color: var(--purple); }
+        .input-group label {
+            position: absolute; left: 18px; top: 50%; transform: translateY(-50%);
+            color: var(--text-light); font-size: 14px; pointer-events: none; transition: all 0.3s;
+        }
+        .input-group input:focus + label, .input-group input:not(:placeholder-shown) + label {
+            top: -8px; left: 12px; font-size: 11px; color: var(--purple); background: var(--white); padding: 0 4px;
+        }
+        .login-btn {
+            background: var(--green); color: white; border: none;
+            padding: 16px; border-radius: 12px; font-size: 16px; font-weight: 600;
+            cursor: pointer; margin-top: 10px;
+        }
+        .login-btn:hover { background: var(--green-dark); }
+        .login-toggle { text-align: center; margin-top: 20px; font-size: 14px; color: var(--text-light); }
+        .login-toggle span { color: var(--purple); cursor: pointer; font-weight: 600; }
+        .login-tabs { display: flex; margin-bottom: 25px; border-bottom: 2px solid var(--border); }
+        .login-tab {
+            flex: 1; padding: 12px; text-align: center; cursor: pointer;
+            font-weight: 600; color: var(--text-light);
+            border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all 0.3s;
+        }
+        .login-tab.active { color: var(--purple); border-bottom-color: var(--purple); }
+
+        /* ===== HEADER ===== */
+        .header {
+            background: var(--white); padding: 15px 20px;
+            border-bottom: 1px solid var(--border);
+            position: sticky; top: 0; z-index: 10;
+            display: flex; align-items: center; justify-content: space-between;
+        }
+        .header-left h2 { font-size: 18px; font-weight: 700; }
+        .header-left .header-subtitle { font-size: 12px; color: var(--text-light); margin-top: 2px; }
+        .header-actions { display: flex; gap: 8px; }
+        .header-btn {
+            width: 38px; height: 38px; border-radius: 50%;
+            background: var(--bg); border: 1px solid var(--border);
+            display: flex; align-items: center; justify-content: center;
+            cursor: pointer; font-size: 18px; transition: all 0.3s;
+        }
+        .header-btn:hover { background: var(--purple); color: white; border-color: var(--purple); }
+
+        /* ===== CHAT ===== */
+        .chat-messages {
+            flex: 1; overflow-y: auto; padding: 10px 12px;
+            display: flex; flex-direction: column; gap: 8px;
+            /* further reduce chat height so suggestions/buttons are always visible */
+            min-height: calc(100vh - 480px);
+            max-height: calc(100vh - 360px);
+        }
+        .message {
+            max-width: 88%; padding: 12px 16px;
+            border-radius: 18px; font-size: 14px; line-height: 1.5;
+            animation: messageIn 0.3s ease;
+        }
+        @keyframes messageIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .message.bot {
+            background: var(--white); align-self: flex-start;
+            border-bottom-left-radius: 6px; box-shadow: 0 1px 3px var(--shadow);
+        }
+        .message.user { background: var(--purple); color: white; align-self: flex-end; border-bottom-right-radius: 6px; }
+        .message-content { display: flex; flex-direction: column; gap: 8px; }
+        .speak-btn {
+            display: inline-flex; align-items: center; gap: 4px;
+            background: none; border: none; color: var(--purple);
+            cursor: pointer; font-size: 13px; padding: 4px 8px;
+            border-radius: 6px; transition: background 0.2s; align-self: flex-start; margin-top: 4px;
+        }
+        .speak-btn:hover { background: #F3E5F5; }
+        .speak-btn.speaking { color: var(--red); }
+        .message-time { font-size: 10px; opacity: 0.6; margin-top: 4px; }
+
+        .suggestions { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 15px; background: var(--white); border-top: 1px solid var(--border); }
+        .suggestion-chip {
+            background: var(--bg); border: 1px solid var(--border);
+            padding: 8px 14px; border-radius: 20px; font-size: 13px;
+            cursor: pointer; white-space: nowrap;
+        }
+        .suggestion-chip:hover { background: var(--purple); color: white; border-color: var(--purple); }
+
+        .chat-input-area { background: var(--white); padding: 12px 15px; border-top: 1px solid var(--border); position: sticky; bottom: 60px; }
+        .input-row { display: flex; align-items: center; gap: 8px; }
+        .chat-input {
+            flex: 1; padding: 12px 16px; border: 2px solid var(--border);
+            border-radius: 24px; font-size: 14px; outline: none;
+        }
+        .chat-input:focus { border-color: var(--purple); }
+        .send-btn {
+            width: 44px; height: 44px; border-radius: 50%;
+            background: var(--green); border: none; color: white;
+            font-size: 20px; cursor: pointer;
+            display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+        }
+        .attach-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+        .voice-btn {
+            width: 36px; height: 36px; border-radius: 50%;
+            background: var(--purple); border: none; color: white;
+            font-size: 16px; cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .voice-btn.recording { background: #E53935; animation: pulse 1s infinite; }
+        @keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.15); } }
+        .attach-btn, .camera-btn {
+            width: 36px; height: 36px; border-radius: 50%;
+            background: var(--bg); border: 1px solid var(--border);
+            color: var(--text-light); font-size: 16px; cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .photo-preview { display: none; padding: 10px 15px; background: var(--white); border-top: 1px solid var(--border); }
+        .photo-preview.active { display: flex; align-items: center; gap: 10px; }
+        .photo-preview img { width: 50px; height: 50px; object-fit: cover; border-radius: 8px; }
+        .photo-preview .remove-photo { color: #E53935; cursor: pointer; font-size: 18px; }
+
+        /* ===== VOICE OVERLAY ===== */
+        .voice-overlay {
+            display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(123,104,174,0.92); z-index: 250;
+            flex-direction: column; align-items: center; justify-content: center; color: white;
+        }
+        .voice-overlay.active { display: flex; }
+        .voice-overlay .mic-icon { font-size: 70px; animation: pulse 1.2s infinite; margin-bottom: 20px; }
+        .voice-overlay p { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
+        .voice-overlay .voice-status { font-size: 14px; opacity: 0.8; }
+        .voice-overlay .voice-close {
+            margin-top: 40px; background: rgba(255,255,255,0.2);
+            border: none; color: white; padding: 12px 30px;
+            border-radius: 24px; font-size: 15px; cursor: pointer;
+        }
+
+        /* ===== DOCUMENTS ===== */
+        .insurance-card {
+            background: linear-gradient(135deg, #4A6CF7, #7B68AE);
+            margin: 15px; border-radius: 16px; padding: 20px;
+            color: white; position: relative; overflow: hidden;
+        }
+        .insurance-card::before {
+            content: ''; position: absolute; top: -50%; right: -30%;
+            width: 200px; height: 200px; background: rgba(255,255,255,0.1); border-radius: 50%;
+        }
+        .insurance-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .insurance-card-header .policy-name { font-weight: 700; font-size: 16px; }
+        .insurance-card-header .policy-status { background: rgba(255,255,255,0.2); padding: 4px 10px; border-radius: 10px; font-size: 11px; }
+        .insurance-fields { display: flex; flex-direction: column; gap: 12px; }
+        .insurance-field { display: flex; justify-content: space-between; align-items: center; padding-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.2); }
+        .insurance-field:last-child { border-bottom: none; }
+        .field-label { font-size: 12px; opacity: 0.8; }
+        .field-value { font-size: 14px; font-weight: 600; }
+        .editable-field { display: flex; align-items: center; gap: 5px; }
+        .editable-field input {
+            background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.3);
+            color: white; padding: 6px 10px; border-radius: 8px;
+            font-size: 13px; width: 120px; text-align: right; outline: none;
+        }
+        .editable-field input::placeholder { color: rgba(255,255,255,0.5); }
+        .editable-field input:focus { border-color: white; background: rgba(255,255,255,0.25); }
+        .edit-icon { cursor: pointer; opacity: 0.7; font-size: 14px; }
+
+        .docs-list { padding: 15px; display: flex; flex-direction: column; gap: 10px; }
+        .doc-item {
+            background: var(--white); border-radius: 12px; padding: 15px;
+            display: flex; align-items: center; gap: 12px;
+            box-shadow: 0 1px 3px var(--shadow); cursor: pointer;
+        }
+        .doc-item:hover { transform: translateY(-1px); box-shadow: 0 3px 8px var(--shadow); }
+        .doc-icon { width: 44px; height: 44px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 20px; flex-shrink: 0; }
+        .doc-icon.blue { background: #E3F2FD; }
+        .doc-icon.green { background: #E8F5E9; }
+        .doc-icon.orange { background: #FFF3E0; }
+        .doc-icon.purple { background: #F3E5F5; }
+        .doc-icon.red { background: #FFEBEE; }
+        .doc-info { flex: 1; }
+        .doc-info .doc-title { font-size: 14px; font-weight: 600; }
+        .doc-info .doc-desc { font-size: 12px; color: var(--text-light); margin-top: 2px; }
+        .doc-arrow { color: var(--text-light); font-size: 18px; }
+
+        .insurance-number-section { background: var(--white); margin: 0 15px 15px; border-radius: 12px; padding: 16px; box-shadow: 0 1px 3px var(--shadow); }
+        .insurance-number-section h4 { font-size: 14px; color: var(--text-light); margin-bottom: 8px; }
+        .insurance-number-section .phone-display { font-size: 22px; font-weight: 700; color: var(--purple); letter-spacing: 1px; }
+
+        /* ===== INSTRUCTIONS ===== */
+        .instr-container { padding: 15px; }
+        .instr-step {
+            background: var(--white); border-radius: 14px;
+            margin-bottom: 12px; overflow: hidden;
+            box-shadow: 0 1px 3px var(--shadow);
+        }
+        .instr-step-header {
+            padding: 16px; display: flex; align-items: center; gap: 12px;
+            cursor: pointer; transition: background 0.3s;
+        }
+        .instr-step-header:hover { background: var(--bg); }
+        .instr-num {
+            width: 32px; height: 32px; border-radius: 50%;
+            background: var(--purple); color: white;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 14px; font-weight: 700; flex-shrink: 0;
+        }
+        .instr-step-header h4 { font-size: 15px; flex: 1; }
+        .instr-chevron { font-size: 18px; color: var(--text-light); transition: transform 0.3s; }
+        .instr-step.open .instr-chevron { transform: rotate(180deg); }
+        .instr-step-body {
+            display: none; padding: 0 16px 16px 60px;
+            font-size: 14px; color: #555; line-height: 1.6;
+        }
+        .instr-step.open .instr-step-body { display: block; }
+        .instr-step-body ul { margin: 8px 0; padding-left: 20px; }
+        .instr-step-body li { margin-bottom: 4px; }
+        .instr-important {
+            background: #FFF3E0; border-left: 3px solid #FF9800;
+            padding: 12px; border-radius: 8px; margin-top: 10px;
+            font-size: 13px;
+        }
+
+        /* ===== PROFILE ===== */
+        .profile-header { background: var(--white); padding: 30px 20px; text-align: center; border-bottom: 1px solid var(--border); }
+        .profile-avatar {
+            width: 90px; height: 90px; border-radius: 50%;
+            background: var(--purple); margin: 0 auto 15px;
+            display: flex; align-items: center; justify-content: center; font-size: 36px; color: white;
+        }
+        .profile-name { font-size: 20px; font-weight: 700; display: flex; align-items: center; justify-content: center; gap: 8px; }
+        .edit-name-btn { cursor: pointer; font-size: 14px; opacity: 0.5; }
+        .edit-name-btn:hover { opacity: 1; }
+        .profile-menu { padding: 15px; }
+        .profile-menu-item {
+            background: var(--white); padding: 16px;
+            display: flex; align-items: center; gap: 14px;
+            cursor: pointer; border-bottom: 1px solid var(--border);
+        }
+        .profile-menu-item:first-child { border-radius: 12px 12px 0 0; }
+        .profile-menu-item:last-child { border-radius: 0 0 12px 12px; border-bottom: none; }
+        .profile-menu-item:hover { background: var(--bg); }
+        .menu-icon { width: 40px; height: 40px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0; }
+        .menu-icon.purple { background: #F3E5F5; color: var(--purple); }
+        .menu-icon.blue { background: #E3F2FD; color: #1976D2; }
+        .menu-icon.red { background: #FFEBEE; color: #D32F2F; }
+        .menu-icon.green { background: #E8F5E9; color: #388E3C; }
+        .menu-icon.orange { background: #FFF3E0; color: #F57C00; }
+        .menu-text { flex: 1; font-size: 15px; font-weight: 500; }
+        .menu-arrow { color: var(--text-light); font-size: 16px; }
+        .emergency-contact-section { background: var(--white); margin: 15px; border-radius: 12px; padding: 16px; box-shadow: 0 1px 3px var(--shadow); }
+        .emergency-contact-section h4 { font-size: 14px; color: var(--text-light); margin-bottom: 12px; }
+        .emergency-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+        .emergency-row:last-child { border-bottom: none; }
+        .emergency-row-icon { width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 16px; }
+        .emergency-row-icon.red-bg { background: #FFEBEE; }
+        .emergency-row-icon.purple-bg { background: #F3E5F5; }
+        .emergency-row-info { flex: 1; }
+        .emergency-row-info .er-name { font-size: 14px; font-weight: 600; }
+        .emergency-row-info .er-phone { font-size: 12px; color: var(--text-light); }
+        .emergency-row .call-btn {
+            width: 32px; height: 32px; border-radius: 50%;
+            background: var(--green); border: none; color: white;
+            font-size: 14px; cursor: pointer;
+        }
+
+        /* ===== DATA SCREEN ===== */
+        .data-screen { display: none; flex-direction: column; min-height: 100vh; }
+        .data-screen.active { display: flex; }
+        .data-header { background: var(--white); padding: 15px 20px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--border); }
+        .back-btn { background: none; border: none; font-size: 22px; cursor: pointer; color: var(--purple); padding: 5px; }
+        .passport-card { margin: 20px 15px; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.15); }
+        .passport-inner { background: linear-gradient(135deg, #B71C1C, #D32F2F); padding: 30px 24px 20px; position: relative; }
+        .passport-header-text { text-align: center; color: #FFD700; position: relative; z-index: 1; }
+        .passport-header-text .coat { font-size: 28px; margin-bottom: 4px; }
+        .passport-header-text .country { font-size: 11px; text-transform: uppercase; letter-spacing: 2px; color: rgba(255,255,255,0.8); margin-bottom: 2px; }
+        .passport-header-text .doc-name { font-size: 16px; font-weight: 700; text-transform: uppercase; letter-spacing: 3px; color: #FFD700; }
+        .passport-body { background: #FFF8E1; padding: 20px 24px; border: 1px solid #E0D5B5; }
+        .passport-row { display: flex; gap: 12px; margin-bottom: 14px; align-items: flex-start; }
+        .passport-photo {
+            width: 80px; height: 105px; background: var(--border);
+            border: 2px solid #C0B898; border-radius: 4px;
+            display: flex; align-items: center; justify-content: center; font-size: 30px; flex-shrink: 0;
+        }
+        .passport-details { flex: 1; }
+        .passport-field { margin-bottom: 8px; }
+        .passport-field-label { font-size: 10px; color: #888; text-transform: uppercase; }
+        .passport-field-value { font-size: 14px; font-weight: 600; border-bottom: 1px solid #D0C8A0; padding-bottom: 2px; }
+        .passport-footer { background: #FFF8E1; padding: 15px 24px 20px; border: 1px solid #E0D5B5; border-top: none; border-radius: 0 0 16px 16px; }
+        .passport-footer-row { display: flex; justify-content: space-between; margin-bottom: 6px; }
+        .passport-footer-label { font-size: 10px; color: #888; text-transform: uppercase; }
+        .passport-footer-value { font-size: 13px; font-weight: 600; }
+        .scan-passport-btn {
+            margin: 0 15px 15px; padding: 14px; background: var(--purple);
+            color: white; border: none; border-radius: 12px; font-size: 15px;
+            font-weight: 600; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px;
+        }
+        .contact-card { margin: 0 15px 15px; background: var(--white); border-radius: 12px; padding: 16px; box-shadow: 0 1px 3px var(--shadow); }
+        .contact-card h4 { font-size: 13px; color: var(--text-light); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .contact-item { display: flex; align-items: center; gap: 12px; padding: 8px 0; }
+        .contact-item-icon { width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 14px; }
+        .contact-item-icon.email { background: #E3F2FD; }
+        .contact-item-icon.phone { background: #E8F5E9; }
+        .contact-item-info .ci-label { font-size: 11px; color: var(--text-light); }
+        .contact-item-info .ci-value { font-size: 14px; font-weight: 600; }
+
+        /* ===== MODALS ===== */
+        .modal-overlay {
+            display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.8); z-index: 100;
+            justify-content: center; align-items: center;
+        }
+        .modal-overlay.active { display: flex; }
+        @keyframes slideUp { from { transform: translateY(30px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        .qr-modal { background: white; padding: 30px; border-radius: 20px; text-align: center; max-width: 320px; width: 90%; animation: slideUp 0.3s; }
+        .qr-code-display {
+            width: 220px; height: 220px; margin: 20px auto;
+            background: white; border: 2px solid var(--border);
+            border-radius: 16px; display: flex; align-items: center; justify-content: center;
+        }
+        .qr-grid { width: 180px; height: 180px; display: grid; grid-template-columns: repeat(21, 1fr); grid-template-rows: repeat(21, 1fr); }
+        .qr-cell { background: black; }
+        .qr-cell.white { background: white; }
+        .qr-close-btn { background: var(--purple); color: white; border: none; padding: 12px 30px; border-radius: 12px; font-size: 15px; cursor: pointer; margin-top: 15px; }
+        .password-modal, .name-modal { background: white; padding: 25px; border-radius: 20px; max-width: 360px; width: 90%; animation: slideUp 0.3s; }
+        .password-modal h3, .name-modal h3 { margin-bottom: 20px; font-size: 18px; }
+        .modal-buttons { display: flex; gap: 10px; margin-top: 20px; }
+        .modal-btn { flex: 1; padding: 12px; border-radius: 12px; font-size: 14px; font-weight: 600; cursor: pointer; border: none; }
+        .modal-btn.primary { background: var(--purple); color: white; }
+        .modal-btn.secondary { background: var(--bg); color: var(--text); border: 1px solid var(--border); }
+
+        /* ===== BOTTOM NAV ===== */
+        .bottom-nav {
+            position: fixed; bottom: 0; left: 50%; transform: translateX(-50%);
+            width: 100%; max-width: 480px; background: var(--white);
+            display: flex; border-top: 1px solid var(--border);
+            z-index: 50; box-shadow: 0 -2px 10px var(--shadow);
+        }
+        .nav-item {
+            flex: 1; padding: 10px 0; display: flex; flex-direction: column;
+            align-items: center; gap: 4px; cursor: pointer;
+            border: none; background: none; color: var(--text-light);
+        }
+        .nav-item.active { color: var(--purple); }
+        .nav-icon { font-size: 22px; height: 28px; display: flex; align-items: center; justify-content: center; }
+        .nav-label { font-size: 11px; font-weight: 500; }
+
+        /* ===== TYPING ===== */
+        .typing-indicator {
+            display: none; align-self: flex-start;
+            background: var(--white); padding: 12px 18px;
+            border-radius: 18px; border-bottom-left-radius: 6px;
+            box-shadow: 0 1px 3px var(--shadow);
+        }
+        .typing-indicator.active { display: flex; gap: 4px; }
+        .typing-dot { width: 8px; height: 8px; background: var(--text-light); border-radius: 50%; animation: typingBounce 1.4s infinite; }
+        .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+        .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes typingBounce { 0%,60%,100% { transform: translateY(0); } 30% { transform: translateY(-6px); } }
+
+        /* ===== TOAST ===== */
+        .toast {
+            position: fixed; top: 20px; left: 50%;
+            transform: translateX(-50%) translateY(-100px);
+            background: #333; color: white; padding: 12px 24px;
+            border-radius: 10px; font-size: 14px; z-index: 200;
+            transition: transform 0.4s; white-space: nowrap;
+        }
+        .toast.show { transform: translateX(-50%) translateY(0); }
+        .hidden-input { display: none; }
+        .hidden { display: none !important; }
+        .message.user img { max-width: 100%; border-radius: 12px; margin-top: 6px; }
+
+        /* ===== CHAT HISTORY SIDEBAR ===== */
+        .history-overlay {
+            display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.5); z-index: 120;
+        }
+        .history-overlay.active { display: block; }
+        .history-sidebar {
+            position: absolute; top: 0; right: 0; bottom: 0;
+            width: 85%; max-width: 360px; background: var(--white);
+            box-shadow: -4px 0 20px rgba(0,0,0,0.15);
+            display: flex; flex-direction: column;
+            animation: slideInRight 0.3s ease;
+        }
+        @keyframes slideInRight { from { transform: translateX(100%); } to { transform: translateX(0); } }
+        .history-header {
+            padding: 20px; display: flex; align-items: center; justify-content: space-between;
+            border-bottom: 1px solid var(--border);
+        }
+        .history-header h3 { font-size: 18px; }
+        .history-close {
+            width: 36px; height: 36px; border-radius: 50%;
+            background: var(--bg); border: none; font-size: 20px;
+            cursor: pointer; display: flex; align-items: center; justify-content: center;
+        }
+        .history-list { flex: 1; overflow-y: auto; padding: 10px; }
+        .history-item {
+            background: var(--bg); border-radius: 12px; padding: 14px;
+            margin-bottom: 8px; cursor: pointer; transition: background 0.2s;
+        }
+        .history-item:hover { background: #E8E0F0; }
+        .history-item .hi-title { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+        .history-item .hi-preview { font-size: 12px; color: var(--text-light); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .history-item .hi-date { font-size: 11px; color: var(--text-light); margin-top: 4px; }
+        .history-new-btn {
+            margin: 15px; padding: 14px; background: var(--purple); color: white;
+            border: none; border-radius: 12px; font-size: 15px; font-weight: 600;
+            cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px;
+        }
+
+        /* ===== CONSTRUCTOR OVERLAY ===== */
+        .constructor-overlay {
+            display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.6); z-index: 180;
+            justify-content: center; align-items: center;
+        }
+        .constructor-overlay.active { display: flex; }
+        .constructor-card {
+            background: var(--white); width: 94%; max-width: 420px;
+            border-radius: 20px; overflow: hidden;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            animation: cardIn 0.4s ease;
+        }
+        .constructor-header {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 16px 20px; border-bottom: 1px solid var(--border);
+        }
+        .constructor-header h3 { font-size: 18px; font-weight: 700; }
+        .constructor-close {
+            width: 36px; height: 36px; border-radius: 50%;
+            background: var(--red); border: none; color: white;
+            font-size: 18px; cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .constructor-map {
+            width: 100%; height: 260px; position: relative;
+            background: #E8E8E8; overflow: hidden;
+        }
+    /* Map module styles (from 1.html) */
+        .map-road {
+            position: absolute;
+            background: #9E9E9E;
+        }
+        .map-road-h {
+            height: 50px; top: 50%; left: 0; right: 0;
+            transform: translateY(-50%);
+        }
+        .map-road-v {
+            width: 50px; left: 50%; top: 0; bottom: 0;
+            transform: translateX(-50%);
+        }
+        .map-road-diag {
+            width: 40px;
+            background: #A0A0A0;
+        }
+        .map-road-diag.d1 {
+            top: 0; left: 0;
+            transform: rotate(-45deg);
+            transform-origin: bottom right;
+            height: 380px;
+        }
+        .map-road-diag.d2 {
+            bottom: 0; right: 0;
+            transform: rotate(-45deg);
+            transform-origin: top left;
+            height: 380px;
+        }
+        .map-crosswalk {
+            position: absolute;
+            width: 50px; height: 30px;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            display: flex; flex-direction: column; gap: 2px;
+        }
+        .crosswalk-line {
+            width: 100%; height: 3px; background: white; border-radius: 1px;
+        }
+        .map-label {
+            position: absolute; font-size: 8px; color: #666;
+            white-space: nowrap; font-style: italic;
+        }
+        .map-car {
+            position: absolute; width: 40px; height: 24px;
+            border-radius: 6px; cursor: grab;
+            transition: box-shadow 0.2s;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 10px; font-weight: 700; color: white;
+            user-select: none; z-index: 10;
+        }
+        .map-car:active { cursor: grabbing; box-shadow: 0 4px 15px rgba(0,0,0,0.3); }
+        .map-car.car-a { background: #1565C0; }
+        .map-car.car-b { background: #0097A7; }
+        .map-hit {
+            position: absolute; width: 22px; height: 22px;
+            background: var(--red); border-radius: 50%;
+            border: 3px solid white; box-shadow: 0 0 10px rgba(229,57,53,0.5);
+            cursor: grab; z-index: 11;
+        }
+        .map-hit:active { cursor: grabbing; }
+        .map-hit::after {
+            content: '💥'; position: absolute;
+            top: 50%; left: 50%; transform: translate(-50%, -50%);
+            font-size: 12px;
+        }
+        .map-marker {
+            position: absolute; width: 22px; height: 22px;
+            background: #FF9800; border-radius: 50%;
+            border: 3px solid white; z-index: 11;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 10px;
+        }
+        .constructor-controls {
+            padding: 14px 20px; display: flex; align-items: center;
+            justify-content: center; gap: 16px;
+            border-top: 1px solid var(--border);
+        }
+        .ctrl-item {
+            display: flex; flex-direction: column; align-items: center; gap: 4px;
+        }
+        .ctrl-item span { font-size: 10px; color: var(--text-light); }
+        .ctrl-dot {
+            width: 36px; height: 36px; border-radius: 50%;
+            cursor: pointer; border: 2px solid var(--border);
+            transition: transform 0.2s;
+        }
+        .ctrl-dot:active { transform: scale(0.85); }
+        .ctrl-dot.red-dot { background: var(--red); }
+        .ctrl-dot.blue-a { background: #1565C0; }
+        .ctrl-dot.blue-b { background: #0097A7; }
+        .ctrl-dot.orange-dot { background: #FF9800; }
+
+        /* ===== DAMAGE ASSESSMENT ===== */
+        .damage-section { padding: 15px; }
+        .damage-card {
+            background: var(--white); border-radius: 14px; padding: 20px;
+            box-shadow: 0 1px 3px var(--shadow); margin-bottom: 12px;
+        }
+        .damage-card h4 { font-size: 15px; margin-bottom: 12px; }
+        .damage-bar-container { margin-bottom: 10px; }
+        .damage-bar-label { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 4px; }
+        .damage-bar { height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
+        .damage-bar-fill { height: 100%; border-radius: 4px; transition: width 0.5s; }
+        .damage-bar-fill.low { background: #4CAF50; }
+        .damage-bar-fill.mid { background: #FF9800; }
+        .damage-bar-fill.high { background: #E53935; }
+        .damage-total {
+            text-align: center; padding: 16px; background: #F3E5F5;
+            border-radius: 12px; margin-top: 12px;
+        }
+        .damage-total .total-label { font-size: 13px; color: var(--text-light); }
+        .damage-total .total-amount { font-size: 28px; font-weight: 700; color: var(--purple); }
+    </style>
+</head>
+<body>
+
+<div class="toast" id="toast"></div>
+
+<!-- Onboarding and emergency modals removed (handled externally). -->
+
+<!-- VOICE OVERLAY -->
+<div class="voice-overlay" id="voiceOverlay" aria-hidden="true">
+    <div class="voice-inner" style="width:320px; padding:12px; display:flex; flex-direction:column; gap:8px; align-items:stretch;">
+        <div style="display:flex; align-items:center; gap:8px;"><div class="mic-icon">🎤</div><strong>Голосовой ввод</strong></div>
+        <textarea id="voiceTextarea" rows="4" placeholder="Говорите — текст будет появляться здесь..." style="resize:none;padding:8px;border-radius:8px;border:1px solid rgba(0,0,0,0.12);"></textarea>
+        <div id="voiceInterim" class="voice-interim" style="font-size:13px;color:var(--text-light);min-height:20px;">Слушаю...</div>
+        <div style="display:flex; gap:8px; justify-content:flex-end;">
+            <button class="voice-stop" onclick="stopVoice()" style="padding:8px 10px;border-radius:8px;background:#f0f0f0;border:none;">Остановить</button>
+            <button class="voice-send" onclick="sendVoice()" style="padding:8px 12px;border-radius:8px;background:var(--purple);color:white;border:none;">Отправить</button>
+            <button class="voice-close" onclick="closeVoiceOverlay()" style="padding:8px 10px;border-radius:8px;background:#fff;border:1px solid var(--border);">Закрыть</button>
+        </div>
+    </div>
+</div>
+
+<!-- CONSTRUCTOR OVERLAY (replaced with map module) -->
+<div class="constructor-overlay" id="constructorOverlay">
+    <div class="constructor-card" style="max-width:980px; width:92%;">
+        <div class="constructor-header">
+            <h3>Конструктор ДТП</h3>
+            <button class="constructor-close" onclick="closeConstructor()">✕</button>
+        </div>
+        <div style="padding:8px 20px; background:linear-gradient(90deg,#fff6e0,#f7f2ee); font-size:13px; color:#664400; border-bottom:1px solid rgba(0,0,0,0.03);">
+            Подсказка: удерживайте <strong>Ctrl</strong> и кликните внутри машинки, чтобы развернуть.
+        </div>
+        <div style="padding:12px 20px; background:var(--white); border-bottom:1px solid var(--border); display:flex; gap:12px; align-items:center;">
+            <button id="addRectBtn">➕ Добавить прямоугольник</button>
+            <button id="clearAllBtn" style="background:#cf5c3e; color:white; border:none; padding:8px 14px; border-radius:20px;">🗑 Очистить все</button>
+            <button id="saveJpgBtn" style="background:#f4c542; border:none; padding:8px 14px; border-radius:20px;">📸 Сохранить как JPG</button>
+        </div>
+        <div class="canvas-container" style="padding:20px; background:#ece4d7;">
+            <div class="map-stage" id="mapStage" style="position:relative; width:100%; max-width:900px; height:600px; margin:12px auto; background:#e0e7dd; box-shadow:0 6px 14px rgba(0,0,0,0.2); border-radius:12px; overflow:hidden;">
+                <div id="tilesContainer" style="position:relative; width:100%; height:100%; background:#f0f2e9;"></div>
+                <canvas id="shapeCanvas" width="900" height="600" style="position:absolute; top:0; left:0; width:100%; height:100%; cursor:crosshair;"></canvas>
+                <!-- Zoom controls -->
+                <div id="zoomControls" style="position:absolute; right:12px; top:50%; transform:translateY(-50%); display:flex; flex-direction:column; gap:8px; z-index:30;">
+                    <button id="zoomInBtn" title="Увеличить" style="width:44px;height:44px;border-radius:8px;border:none;background:#ffffffcc;box-shadow:0 2px 6px rgba(0,0,0,0.15);font-size:20px;cursor:pointer;">+</button>
+                    <button id="zoomOutBtn" title="Уменьшить" style="width:44px;height:44px;border-radius:8px;border:none;background:#ffffffcc;box-shadow:0 2px 6px rgba(0,0,0,0.15);font-size:20px;cursor:pointer;">−</button>
+                </div>
+            </div>
+        </div>
+        <div class="status" style="background:#fef7e0; padding:8px 20px; font-size:13px; border-top:1px solid #ddd0b0; display:flex; justify-content:space-between;">
+            <span>📍 Место ДТП: <span class="coords-info" id="centerCoords">56.663931, 60.651721</span></span>
+            <span>✏️ Клик по фигуре → выделить, затем тащи / поворачивай за кружок</span>
+        </div>
+    </div>
+</div>
+
+<!-- CHAT HISTORY SIDEBAR -->
+<div class="history-overlay" id="historyOverlay" onclick="closeHistory()">
+    <div class="history-sidebar" onclick="event.stopPropagation()">
+        <div class="history-header">
+            <h3>💬 История чатов</h3>
+            <button class="history-close" onclick="closeHistory()">✕</button>
+        </div>
+        <div class="history-list" id="historyList">
+            <div class="history-item" onclick="loadChat(0)">
+                <div class="hi-title">Вопрос про ДТП</div>
+                <div class="hi-preview">Я попал в ДТП. Что делать?</div>
+                <div class="hi-date">Сегодня, 14:32</div>
+            </div>
+            <div class="history-item" onclick="loadChat(1)">
+                <div class="hi-title">Европротокол</div>
+                <div class="hi-preview">Как оформить европротокол?</div>
+                <div class="hi-date">Вчера, 09:15</div>
+            </div>
+            <div class="history-item" onclick="loadChat(2)">
+                <div class="hi-title">Страховая выплата</div>
+                <div class="hi-preview">Какие документы нужны для страховой?</div>
+                <div class="hi-date">2 мая, 16:48</div>
+            </div>
+        </div>
+        <button class="history-new-btn" onclick="newChat(); closeHistory();">+ Новый чат</button>
+    </div>
+</div>
+
+<!-- LOGIN -->
+<div class="screen login-screen active" id="loginScreen">
+    <div class="login-container">
+        <div class="login-logo">
+            <div class="logo-icon">🚗</div>
+            <h1>АвтоПомощник</h1>
+            <p>Ваш помощник на дороге</p>
+        </div>
+        <div class="login-tabs">
+            <div class="login-tab active" onclick="switchLoginTab('login')">Вход</div>
+            <div class="login-tab" onclick="switchLoginTab('register')">Регистрация</div>
+        </div>
+        <div class="login-form" id="loginForm">
+            <div class="input-group"><input type="email" id="loginEmail" placeholder=" " value="ivan@mail.ru"><label>Электронная почта</label></div>
+            <div class="input-group"><input type="password" id="loginPassword" placeholder=" " value="password"><label>Ваш пароль</label></div>
+            <button class="login-btn" onclick="handleLogin()">Войти через Сбер-ID</button>
+            <div class="login-toggle">Забыли пароль? <span onclick="showToast('Ссылка отправлена на почту')">Восстановить</span></div>
+        </div>
+        <div class="login-form" id="registerForm" style="display:none;">
+            <div class="input-group"><input type="text" id="regName" placeholder=" "><label>ФИО</label></div>
+            <div class="input-group"><input type="email" id="regEmail" placeholder=" "><label>Электронная почта</label></div>
+            <div class="input-group"><input type="password" id="regPassword" placeholder=" "><label>Придумайте пароль</label></div>
+            <div class="input-group"><input type="password" id="regPasswordConfirm" placeholder=" "><label>Подтвердите пароль</label></div>
+            <button class="login-btn" onclick="handleRegister()">Зарегистрироваться</button>
+        </div>
+    </div>
+</div>
+
+<!-- MAIN APP -->
+<div id="mainApp" style="display:none;">
+
+    <!-- CHAT -->
+    <div class="screen active" id="chatScreen">
+        <div class="header">
+            <div class="header-left">
+                <h2> АвтоПомощник</h2>
+                <div class="header-subtitle">Онлайн — отвечаю на ваши вопросы</div>
+            </div>
+            <div class="header-actions">
+                <div class="header-btn" onclick="openHistory()" title="История чатов"></div>
+            </div>
+        </div>
+        <div class="chat-messages" id="chatMessages">
+            <div class="message bot">
+                <div class="message-content"><div class="message-text">Здравствуйте! Я ваш виртуальный помощник по вопросам ДТП и страхования. Чем могу помочь?</div></div>
+                <button class="speak-btn" onclick="speakMsg(this, 'Здравствуйте! Я ваш виртуальный помощник по вопросам ДТП и страхования. Чем могу помочь?')">🔊 Озвучить</button>
+                <div class="message-time">Сейчас</div>
+            </div>
+            <div class="typing-indicator" id="typingIndicator"><div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div></div>
+        </div>
+        <div class="suggestions" id="suggestions">
+            <div class="suggestion-chip" onclick="sendSug('Я попал в ДТП')">Я попал в ДТП</div>
+            <div class="suggestion-chip" onclick="sendSug('Как оформить европротокол?')">Европротокол</div>
+            <div class="suggestion-chip" onclick="sendSug('Как сделать фото повреждений?')">Фото повреждений</div>
+            <div class="suggestion-chip" onclick="sendSug('Какие документы нужны?')">Документы</div>
+        </div>
+        <div style="padding:10px 15px;">
+            <button id="openConstructorBtn" style="width:100%;padding:12px;border-radius:12px;border:none;background:var(--purple);color:white;font-weight:700;cursor:pointer;" onclick="openConstructor()">Открыть конструктор</button>
+        </div>
+        <div class="chat-input-area">
+            <div class="input-row">
+                <input type="text" class="chat-input" id="chatInput" placeholder="Введите сообщение..." onkeypress="if(event.key==='Enter')sendMsg()">
+                <button class="send-btn" onclick="sendMsg()">➤</button>
+            </div>
+            <div class="attach-row">
+                <button class="voice-btn" onclick="openVoice()">🎤</button>
+                <button class="attach-btn" onclick="document.getElementById('photoInput').click()">📎</button>
+                <!-- camera button removed -->
+                <input type="file" id="photoInput" class="hidden-input" accept="image/*" onchange="handlePhoto(event)">
+                <input type="file" id="cameraInput" class="hidden-input" accept="image/*" capture="environment" onchange="handlePhoto(event)">
+            </div>
+        </div>
+        <div class="photo-preview" id="photoPreview">
+            <img id="previewImg" src="" alt="">
+            <span class="remove-photo" onclick="removePhoto()">✕</span>
+            <span style="font-size:13px;color:var(--text-light);">Фото прикреплено</span>
+        </div>
+    </div>
+
+    <!-- DOCUMENTS -->
+    <div class="screen" id="docsScreen">
+        <div class="header">
+            <h2>📄 Документы</h2>
+            <div class="header-subtitle">Ваши полисы и данные</div>
+        </div>
+        <div class="insurance-card">
+            <div class="insurance-card-header">
+                <span class="policy-name">Полис ОСАГО</span>
+                <span class="policy-status">Действует</span>
+            </div>
+            <div class="insurance-fields">
+                <div class="insurance-field"><span class="field-label">Страховая</span><span class="field-value">Росгосстрах</span></div>
+                <div class="insurance-field"><span class="field-label">Действует до</span><span class="field-value">15.12.2026</span></div>
+                <div class="insurance-field"><span class="field-label">VIN</span><div class="editable-field"><input type="text" id="vinInput" value="XWB3K32EDLA000001" onchange="updDoc()"><span class="edit-icon">✏️</span></div></div>
+                <div class="insurance-field"><span class="field-label">Марка</span><div class="editable-field"><input type="text" id="brandInput" value="Toyota Camry" onchange="updDoc()"><span class="edit-icon">✏️</span></div></div>
+                <div class="insurance-field"><span class="field-label">Гос. номер</span><div class="editable-field"><input type="text" id="plateInput" value="С227НА 69" onchange="updDoc()"><span class="edit-icon">✏️</span></div></div>
+            </div>
+        </div>
+        <div class="insurance-number-section">
+            <h4>📞 Номер страховой</h4>
+            <div class="phone-display">8 (800) 100-20-00</div>
+        </div>
+        <div class="docs-list">
+            <div class="doc-item" onclick="showToast('Открытие полиса ОСАГО...')"><div class="doc-icon blue"></div><div class="doc-info"><div class="doc-title">Полис ОСАГО</div><div class="doc-desc">Росгосстрах • до 15.12.2026</div></div><span class="doc-arrow">›</span></div>
+            <div class="doc-item" onclick="showToast('Диагностическая карта')"><div class="doc-icon green">✅</div><div class="doc-info"><div class="doc-title">Диагностическая карта</div><div class="doc-desc">Пройдена 10.03.2026</div></div><span class="doc-arrow">›</span></div>
+            <div class="doc-item" onclick="showToast('Водительское удостоверение')"><div class="doc-icon orange"></div><div class="doc-info"><div class="doc-title">Водительское удостоверение</div><div class="doc-desc">Категории: B</div></div><span class="doc-arrow">›</span></div>
+            <div class="doc-item" onclick="showToast('СТС')"><div class="doc-icon purple">📑</div><div class="doc-info"><div class="doc-title">СТС</div><div class="doc-desc">Свидетельство о регистрации ТС</div></div><span class="doc-arrow">›</span></div>
+            <div class="doc-item" onclick="showToast('Оценка ущерба')"><div class="doc-icon red"></div><div class="doc-info"><div class="doc-title">Оценка ущерба</div><div class="doc-desc">Рассчитать стоимость повреждений</div></div><span class="doc-arrow">›</span></div>
+        </div>
+
+        <!-- Оценка ущерба section -->
+        <div class="damage-section">
+            <h3 style="font-size:16px; margin-bottom:10px;">💰 Оценка ущерба</h3>
+            <div class="damage-card">
+                <h4>Предварительная оценка повреждений</h4>
+                <div class="damage-bar-container">
+                    <div class="damage-bar-label"><span>Передний бампер</span><span>35 000 ₽</span></div>
+                    <div class="damage-bar"><div class="damage-bar-fill mid" style="width:45%;"></div></div>
+                </div>
+                <div class="damage-bar-container">
+                    <div class="damage-bar-label"><span>Капот</span><span>52 000 ₽</span></div>
+                    <div class="damage-bar"><div class="damage-bar-fill mid" style="width:60%;"></div></div>
+                </div>
+                <div class="damage-bar-container">
+                    <div class="damage-bar-label"><span>Левое крыло</span><span>28 000 ₽</span></div>
+                    <div class="damage-bar"><div class="damage-bar-fill low" style="width:30%;"></div></div>
+                </div>
+                <div class="damage-bar-container">
+                    <div class="damage-bar-label"><span>Фара левая</span><span>18 000 ₽</span></div>
+                    <div class="damage-bar"><div class="damage-bar-fill low" style="width:20%;"></div></div>
+                </div>
+                <div class="damage-total">
+                    <div class="total-label">Общая сумма ущерба</div>
+                    <div class="total-amount">133 000 ₽</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- INSTRUCTIONS -->
+    <div class="screen" id="instrScreen">
+        <div class="header">
+            <h2>📖 Инструкция</h2>
+            <div class="header-subtitle">Пошаговое заполнение европротокола</div>
+        </div>
+        <div class="instr-container">
+            <div class="instr-step open" onclick="toggleInstr(this)">
+                <div class="instr-step-header">
+                    <div class="instr-num">1</div>
+                    <h4>Обеспечьте безопасность</h4>
+                    <span class="instr-chevron">▼</span>
+                </div>
+                <div class="instr-step-body">
+                    <ul>
+                        <li>Включите аварийную сигнализацию</li>
+                        <li>Выставьте знак аварийной остановки (15м в городе, 30м за городом)</li>
+                        <li>Убедитесь, что нет пострадавших</li>
+                    </ul>
+                    <div class="instr-important">⚠️ Если есть пострадавшие — вызывайте 112 и не трогайте ничего до приезда полиции!</div>
+                </div>
+            </div>
+            <div class="instr-step" onclick="toggleInstr(this)">
+                <div class="instr-step-header">
+                    <div class="instr-num">2</div>
+                    <h4>Проверьте условия для европротокола</h4>
+                    <span class="instr-chevron">▼</span>
+                </div>
+                <div class="instr-step-body">
+                    <ul>
+                        <li>В ДТП участвуют только 2 автомобиля</li>
+                        <li>Нет пострадавших (людей)</li>
+                        <li>У обоих водителей есть действующий полис ОСАГО</li>
+                        <li>Ущерб не превышает 400 000 ₽ (с фотофиксацией)</li>
+                        <li>Нет разногласий (или до 100 000 ₽ с разногласиями)</li>
+                    </ul>
+                </div>
+            </div>
+            <div class="instr-step" onclick="toggleInstr(this)">
+                <div class="instr-step-header">
+                    <div class="instr-num">3</div>
+                    <h4>Сфотографируйте место ДТП</h4>
+                    <span class="instr-chevron">▼</span>
+                </div>
+                <div class="instr-step-body">
+                    <ul>
+                        <li>Общий план с привязкой к местности (4 стороны)</li>
+                        <li>Повреждения обоих автомобилей крупным планом</li>
+                        <li>Гос. номера обоих автомобилей</li>
+                        <li>Дорожные знаки, разметка, следы торможения</li>
+                    </ul>
+                    <div class="instr-important">📸 Минимум 6-8 фотографий. Чем больше — тем лучше!</div>
+                </div>
+            </div>
+            <div class="instr-step" onclick="toggleInstr(this)">
+                <div class="instr-step-header">
+                    <div class="instr-num">4</div>
+                    <h4>Заполните бланк извещения о ДТП</h4>
+                    <span class="instr-chevron">▼</span>
+                </div>
+                <div class="instr-step-body">
+                    <ul>
+                        <li>Заполните лицевую сторону совместно с другим водителем</li>
+                        <li>Укажите точное время и место ДТП</li>
+                        <li>Опишите обстоятельства и повреждения</li>
+                        <li>Нарисуйте схему ДТП</li>
+                        <li>Оба водителя ставят подписи</li>
+                    </ul>
+                </div>
+            </div>
+            <div class="instr-step" onclick="toggleInstr(this)">
+                <div class="instr-step-header">
+                    <div class="instr-num">5</div>
+                    <h4>Заполните обратную сторону</h4>
+                    <span class="instr-chevron">▼</span>
+                </div>
+                <div class="instr-step-body">
+                    <ul>
+                        <li>Каждый водитель заполняет свою сторону самостоятельно</li>
+                        <li>Укажите свою версию обстоятельств</li>
+                        <li>Не допускайте исправлений в бланке</li>
+                        <li>Поставьте подпись</li>
+                    </ul>
+                </div>
+            </div>
+            <div class="instr-step" onclick="toggleInstr(this)">
+                <div class="instr-step-header">
+                    <div class="instr-num">6</div>
+                    <h4>Передайте документы в страховую</h4>
+                    <span class="instr-chevron">▼</span>
+                </div>
+                <div class="instr-step-body">
+                    <ul>
+                        <li>Обратитесь в свою страховую компанию</li>
+                        <li>Подайте заявление в течение 5 рабочих дней</li>
+                        <li>Приложите бланк извещения, фото, справку из ГИБДД (при необходимости)</li>
+                        <li>Не ремонтируйте автомобиль до осмотра страховой</li>
+                    </ul>
+                    <div class="instr-important">⏰ У вас есть 5 дней на подачу заявления! Не опаздывайте.</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- PROFILE -->
+    <div class="screen" id="profileScreen">
+        <div class="profile-header">
+            <div class="profile-avatar"></div>
+            <div class="profile-name">
+                <span id="profileName">Иван Иванович</span>
+                <span class="edit-name-btn" onclick="openNameEdit()">✏️</span>
+            </div>
+        </div>
+        <div class="emergency-contact-section">
+            <h4>🚨 Экстренные контакты</h4>
+            <div class="emergency-row">
+                <div class="emergency-row-icon red-bg"></div>
+                <div class="emergency-row-info"><div class="er-name">Экстренная служба</div><div class="er-phone">112</div></div>
+                <button class="call-btn" onclick="window.location.href='tel:112'">📞</button>
+            </div>
+            <div class="emergency-row">
+                <div class="emergency-row-icon purple-bg">❤️</div>
+                <div class="emergency-row-info"><div class="er-name">Близкий человек</div><div class="er-phone" id="closePhoneDisplay">+7 (999) 123-45-67</div></div>
+                <button class="call-btn" onclick="window.location.href='tel:+79991234567'"></button>
+            </div>
+        </div>
+        <div class="profile-menu">
+            <div class="profile-menu-item" onclick="showQR()"><div class="menu-icon purple"></div><div class="menu-text">Показать QR-код</div><span class="menu-arrow">›</span></div>
+            <div class="profile-menu-item" onclick="openData()"><div class="menu-icon blue">📋</div><div class="menu-text">Данные</div><span class="menu-arrow">›</span></div>
+            <div class="profile-menu-item" onclick="openPassChange()"><div class="menu-icon orange"></div><div class="menu-text">Изменить пароль</div><span class="menu-arrow">›</span></div>
+            <div class="profile-menu-item" onclick="handleLogout()"><div class="menu-icon red">🚪</div><div class="menu-text">Выйти из профиля</div><span class="menu-arrow">›</span></div>
+        </div>
+    </div>
+
+    <!-- DATA SCREEN -->
+    <div class="data-screen" id="dataScreen">
+        <div class="data-header">
+            <button class="back-btn" onclick="closeData()">←</button>
+            <h2 style="font-size:17px;">Данные пользователя</h2>
+        </div>
+        <div class="passport-card">
+            <div class="passport-inner">
+                <div class="passport-header-text">
+                    <div class="coat">️</div>
+                    <div class="country">Российская Федерация</div>
+                    <div class="doc-name">Паспорт</div>
+                    <div class="doc-name-en">Passport</div>
+                </div>
+            </div>
+            <div class="passport-body">
+                <div class="passport-row">
+                    <div class="passport-photo">👤</div>
+                    <div class="passport-details">
+                        <div class="passport-field"><div class="passport-field-label">Фамилия, Имя, Отчество</div><div class="passport-field-value" id="passportName">Иванов Иван Иванович</div></div>
+                        <div class="passport-field"><div class="passport-field-label">Дата рождения</div><div class="passport-field-value">15.03.1990</div></div>
+                    </div>
+                </div>
+                <div class="passport-row">
+                    <div class="passport-details">
+                        <div class="passport-field"><div class="passport-field-label">Пол</div><div class="passport-field-value">Мужской</div></div>
+                        <div class="passport-field"><div class="passport-field-label">Место рождения</div><div class="passport-field-value">г. Москва</div></div>
+                    </div>
+                </div>
+            </div>
+            <div class="passport-footer">
+                <div class="passport-footer-row">
+                    <div><div class="passport-footer-label">Серия</div><div class="passport-footer-value">45 09</div></div>
+                    <div><div class="passport-footer-label">Номер</div><div class="passport-footer-value">123456</div></div>
+                    <div><div class="passport-footer-label">Код подразд.</div><div class="passport-footer-value">770-001</div></div>
+                </div>
+                <div class="passport-footer-row" style="margin-top:8px;">
+                    <div><div class="passport-footer-label">Дата выдачи</div><div class="passport-footer-value">20.05.2015</div></div>
+                    <div><div class="passport-footer-label">Кем выдан</div><div class="passport-footer-value" style="font-size:11px;">ОВД Тверского р-на</div></div>
+                </div>
+            </div>
+        </div>
+        <button class="scan-passport-btn" onclick="scanPassport()">📷 Сканировать паспорт</button>
+        <div class="contact-card">
+            <h4>Контактные данные</h4>
+            <div class="contact-item"><div class="contact-item-icon email"></div><div class="contact-item-info"><div class="ci-label">Электронная почта</div><div class="ci-value">ivan@mail.ru</div></div></div>
+            <div class="contact-item"><div class="contact-item-icon phone">📱</div><div class="contact-item-info"><div class="ci-label">Номер телефона</div><div class="ci-value">+7 (999) 123-45-67</div></div></div>
+            <div class="contact-item"><div class="contact-item-icon" style="background:#F3E5F5;"></div><div class="contact-item-info"><div class="ci-label">Паспортные данные</div><div class="ci-value">4509 123456</div></div></div>
+        </div>
+    </div>
+
+    <!-- BOTTOM NAV -->
+    <div class="bottom-nav" id="bottomNav">
+        <button class="nav-item active" id="navChat" onclick="switchTab('chat')"><span class="nav-icon">💬</span><span class="nav-label">Чат</span></button>
+        <button class="nav-item" id="navDocs" onclick="switchTab('docs')"><span class="nav-icon">📄</span><span class="nav-label">Документы</span></button>
+        <button class="nav-item" id="navInstr" onclick="switchTab('instr')"><span class="nav-icon">📖</span><span class="nav-label">Инструкция</span></button>
+        <button class="nav-item" id="navProfile" onclick="switchTab('profile')"><span class="nav-icon">👤</span><span class="nav-label">Профиль</span></button>
+    </div>
+</div>
+
+<!-- QR MODAL -->
+<div class="modal-overlay" id="qrModal">
+    <div class="qr-modal">
+        <h3>Ваш QR-код</h3>
+        <p style="font-size:13px;color:var(--text-light);margin-bottom:10px;">Покажите этот код сотруднику</p>
+        <div class="qr-code-display"><div class="qr-grid" id="qrGrid"></div></div>
+        <button class="qr-close-btn" onclick="closeQR()">Закрыть</button>
+    </div>
+</div>
+
+<!-- PASSWORD MODAL -->
+<div class="modal-overlay" id="passwordModal">
+    <div class="password-modal">
+        <h3>🔐 Изменить пароль</h3>
+        <div class="input-group"><input type="password" id="oldPass" placeholder=" " style="width:100%;padding:12px;border:2px solid var(--border);border-radius:10px;font-size:14px;outline:none;"><label>Старый пароль</label></div>
+        <div class="input-group"><input type="password" id="newPass" placeholder=" " style="width:100%;padding:12px;border:2px solid var(--border);border-radius:10px;font-size:14px;outline:none;"><label>Новый пароль</label></div>
+        <div class="input-group"><input type="password" id="confPass" placeholder=" " style="width:100%;padding:12px;border:2px solid var(--border);border-radius:10px;font-size:14px;outline:none;"><label>Подтвердите новый пароль</label></div>
+        <div class="modal-buttons">
+            <button class="modal-btn secondary" onclick="closePassChange()">Отмена</button>
+            <button class="modal-btn primary" onclick="savePass()">Сохранить</button>
+        </div>
+    </div>
+</div>
+
+<!-- NAME MODAL -->
+<div class="modal-overlay" id="nameModal">
+    <div class="name-modal">
+        <h3>✏️ Изменить ФИО</h3>
+        <div class="input-group"><input type="text" id="nameInput" placeholder=" " style="width:100%;padding:12px;border:2px solid var(--border);border-radius:10px;font-size:14px;outline:none;" value="Иван Иванович"><label>ФИО</label></div>
+        <div class="modal-buttons">
+            <button class="modal-btn secondary" onclick="closeNameEdit()">Отмена</button>
+            <button class="modal-btn primary" onclick="saveName()">Сохранить</button>
+        </div>
+    </div>
+</div>
+
+<script>
+// State
+let currentTab = 'chat';
+let isLoggedIn = false;
+let attachedPhoto = null;
+let currentSpeech = null;
+let currentSpeakingBtn = null;
+let voiceTimer = null;
+let dragTarget = null;
+let dragOffset = {x:0, y:0};
+let chatHistories = [
+    {title:'Вопрос про ДТП', messages:[{type:'user',text:'Я попал в ДТП. Что делать?'},{type:'bot',text:'🚨 Сохраняйте спокойствие! Остановитесь, включите аварийку, выставите знак.'}]},
+    {title:'Европротокол', messages:[{type:'user',text:'Как оформить европротокол?'},{type:'bot',text:'📝 Убедитесь что нет пострадавших, у обоих есть ОСАГО...'}]},
+    {title:'Страховая выплата', messages:[{type:'user',text:'Какие документы нужны для страховой?'},{type:'bot',text:'📋 Водительское удостоверение, СТС, полис ОСАГО, бланк извещения...'}]}
+];
+
+// Onboarding
+function nextOb(n){document.getElementById('obCard'+(n-1)).classList.add('hidden');document.getElementById('obCard'+n).classList.remove('hidden');}
+function skipOb(){ const el=document.getElementById('onboardingOverlay'); if(el) el.classList.remove('active'); }
+function emergencyFlow(){ const ob=document.getElementById('onboardingOverlay'); if(ob) ob.classList.remove('active'); const em=document.getElementById('emergencyScreen'); if(em) em.classList.add('active'); }
+function closeEmergency(){ const em=document.getElementById('emergencyScreen'); if(em) em.classList.remove('active'); }
+function selectEurop(o){skipOb();if(o===1){setTimeout(()=>{switchTab('chat');document.getElementById('chatInput').value='Хочу оформить через конструктор';sendMsg();},300);}else if(o===2){showToast('Переход на Госуслуги Авто...');}else{showToast('Скачивание печатного бланка...');}}
+
+// Login
+function switchLoginTab(t){document.querySelectorAll('.login-tab').forEach(x=>x.classList.remove('active'));if(t==='login'){document.querySelectorAll('.login-tab')[0].classList.add('active');document.getElementById('loginForm').style.display='flex';document.getElementById('registerForm').style.display='none';}else{document.querySelectorAll('.login-tab')[1].classList.add('active');document.getElementById('loginForm').style.display='none';document.getElementById('registerForm').style.display='flex';}}
+function handleLogin(){if(!document.getElementById('loginEmail').value||!document.getElementById('loginPassword').value){showToast('Заполните все поля');return;}showToast('Вход выполнен!');setTimeout(()=>{document.getElementById('loginScreen').classList.remove('active');document.getElementById('mainApp').style.display='block';isLoggedIn=true;showOnb();},500);}
+function handleRegister(){const n=document.getElementById('regName').value,e=document.getElementById('regEmail').value,p=document.getElementById('regPassword').value,c=document.getElementById('regPasswordConfirm').value;if(!n||!e||!p||!c){showToast('Заполните все поля');return;}if(p!==c){showToast('Пароли не совпадают');return;}showToast('Регистрация успешна!');setTimeout(()=>{document.getElementById('loginScreen').classList.remove('active');document.getElementById('mainApp').style.display='block';isLoggedIn=true;if(n){document.getElementById('profileName').textContent=n;document.getElementById('nameInput').value=n;document.getElementById('passportName').textContent=n;}showOnb();},500);}
+function handleLogout(){if(confirm('Выйти из профиля?')){document.getElementById('mainApp').style.display='none';document.getElementById('loginScreen').classList.add('active');isLoggedIn=false;showToast('Вы вышли');resetChat();}}
+function showOnb(){ const ob=document.getElementById('onboardingOverlay'); if(ob) { ob.classList.add('active'); const c1=document.getElementById('obCard1'); if(c1) c1.classList.remove('hidden'); const c2=document.getElementById('obCard2'); if(c2) c2.classList.add('hidden'); } }
+
+// Tab navigation
+function switchTab(tab){
+    currentTab=tab;
+    document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
+    document.getElementById('dataScreen').classList.remove('active');
+    document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
+    if(tab==='chat'){document.getElementById('chatScreen').classList.add('active');document.getElementById('navChat').classList.add('active');}
+    else if(tab==='docs'){document.getElementById('docsScreen').classList.add('active');document.getElementById('navDocs').classList.add('active');}
+    else if(tab==='instr'){document.getElementById('instrScreen').classList.add('active');document.getElementById('navInstr').classList.add('active');}
+    else if(tab==='profile'){document.getElementById('profileScreen').classList.add('active');document.getElementById('navProfile').classList.add('active');}
+    document.getElementById('bottomNav').style.display='flex';
+}
+
+// Data screen
+function openData(){document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));document.getElementById('dataScreen').classList.add('active');document.getElementById('bottomNav').style.display='none';}
+function closeData(){document.getElementById('dataScreen').classList.remove('active');document.getElementById('profileScreen').classList.add('active');currentTab='profile';document.getElementById('bottomNav').style.display='flex';document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));document.getElementById('navProfile').classList.add('active');}
+function scanPassport(){showToast('📷 Камера для сканирования...');setTimeout(()=>showToast('Паспорт отсканирован!'),2000);}
+
+// Chat
+function sendMsg(){
+    const inp=document.getElementById('chatInput');
+    const text=inp.value.trim();
+    if(!text&&!attachedPhoto)return;
+    if(text)addMsg(text,'user');
+    if(attachedPhoto){addPhotoMsg(attachedPhoto,text||'Фото');removePhoto();}
+    inp.value='';
+    // Check for "конструктор"
+    if(text.toLowerCase().includes('конструктор')){openConstructor();return;}
+    showTyping();
+    setTimeout(()=>{hideTyping();addMsg(getResponse(text),'bot');},1000+Math.random()*1500);
+}
+function sendSug(t){document.getElementById('chatInput').value=t;sendMsg();}
+function addMsg(text,type){
+    const c=document.getElementById('chatMessages');
+    const t=document.getElementById('typingIndicator');
+    const m=document.createElement('div');
+    m.className='message '+type;
+    let f=text.replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>').replace(/\n/g,'<br>');
+    const now=new Date();const time=now.getHours().toString().padStart(2,'0')+':'+now.getMinutes().toString().padStart(2,'0');
+    const plain=text.replace(/\*\*/g,'').replace(/\n/g,' ');
+    if(type==='bot'){
+        m.innerHTML=`<div class="message-content"><div class="message-text">${f}</div></div><button class="speak-btn" onclick="speakMsg(this,'${plain.replace(/'/g,"\\'")}')">🔊 Озвучить</button><div class="message-time">${time}</div>`;
+    }else{m.innerHTML=`<div class="message-text">${f}</div><div class="message-time">${time}</div>`;}
+    c.insertBefore(m,t);c.scrollTop=c.scrollHeight;
+}
+function addPhotoMsg(src,cap){
+    const c=document.getElementById('chatMessages');const t=document.getElementById('typingIndicator');
+    const m=document.createElement('div');m.className='message user';
+    const now=new Date();const time=now.getHours().toString().padStart(2,'0')+':'+now.getMinutes().toString().padStart(2,'0');
+    m.innerHTML=`<img src="${src}" alt="Photo"><div class="message-text" style="margin-top:6px;">${cap}</div><div class="message-time">${time}</div>`;
+    c.insertBefore(m,t);c.scrollTop=c.scrollHeight;
+    setTimeout(()=>{showTyping();setTimeout(()=>{hideTyping();addMsg(getResponse('фото прикреплено'),'bot');},1500);},500);
+}
+function getResponse(txt){
+    const l=txt.toLowerCase();
+    if(l.includes('дтп')||l.includes('авари')||l.includes('попал'))return`🚨 **Вы попали в ДТП. Сохраняйте спокойствие!**\n\n1️⃣ Остановитесь и включите аварийку\n2️⃣ Выставьте знак (15м в городе)\n3️ Проверьте пострадавших\n4️⃣ Вызовите 112 при необходимости\n5️⃣ Сфотографируйте место ДТП\n\nНужна помощь с оформлением?`;
+    if(l.includes('европротокол')||l.includes('протокол')||l.includes('конструктор'))return`📝 **Оформление европротокола:**\n\n1. Нет пострадавших\n2. У обоих есть ОСАГО\n3. Ущерб до 400 000 ₽\n\n2. Заполните бланк\n3. Сделайте фото\n4. Подпишите\n5. Отправьте в страховую за 5 дней`;
+    if(l.includes('фото')&&!l.includes('прикреп'))return`📸 **Как сфотографировать:**\n\n• Общий план (4 стороны)\n• Повреждения крупным планом\n• Гос. номера\n• Дорожные знаки и разметку\n\n✅ Минимум 6-8 фото!`;
+    if(l.includes('документ')||l.includes('осаго'))return`📋 **Документы:**\n\n• Водительское удостоверение\n• СТС\n• Полис ОСАГО\n• Бланк извещения о ДТП\n• Фотофиксация`;
+    if(l.includes('фото')&&l.includes('прикреп'))return` **Фото получено!**\n\n✅ Фото чёткое и информативное\n✅ Сделайте ещё 2-3 фото с других ракурсов\n\n📌 Не забудьте:\n• Общий план ДТП\n• Гос. номер второго авто\n• Дорожную обстановку`;
+    return`Спасибо за вопрос! 😊 Я могу помочь с:\n• Оформлением ДТП\n• Европротоколом\n• Фотофиксацией\n• Документами\n\nПопробуйте написать **"конструктор"** для схемы ДТП!`;
+}
+function showTyping(){document.getElementById('typingIndicator').classList.add('active');document.getElementById('chatMessages').scrollTop=document.getElementById('chatMessages').scrollHeight;}
+function hideTyping(){document.getElementById('typingIndicator').classList.remove('active');}
+function resetChat(){
+    const c=document.getElementById('chatMessages');const t=document.getElementById('typingIndicator');
+    c.querySelectorAll('.message').forEach(m=>m.remove());
+    const im=document.createElement('div');im.className='message bot';
+    im.innerHTML=`<div class="message-content"><div class="message-text">Здравствуйте! Чем могу помочь?</div></div><button class="speak-btn" onclick="speakMsg(this,'Здравствуйте! Чем могу помочь?')">🔊 Озвучить</button><div class="message-time">Сейчас</div>`;
+    c.insertBefore(im,t);
+}
+
+// Speech
+// --- Speech Recognition (voice input) ---
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition || null;
+let recognition = null;
+let recognizing = false;
+let interimTranscript = '';
+
+if (SpeechRecognition) {
+    recognition = new SpeechRecognition();
+    recognition.lang = 'ru-RU';
+    recognition.interimResults = true;
+    recognition.maxAlternatives = 1;
+    // Use continuous mode so user can speak multiple phrases; user will manually Stop/Send
+    recognition.continuous = true;
+
+    recognition.onstart = () => {
+        recognizing = true;
+        const overlay = document.getElementById('voiceOverlay'); if (overlay) overlay.classList.add('active');
+        const interim = document.getElementById('voiceInterim'); if (interim) interim.textContent = 'Слушаю...';
+    };
+    recognition.onerror = (e) => { console.warn('Speech recognition error', e); showToast('Ошибка распознавания голоса'); recognizing = false; };
+    recognition.onresult = (ev) => {
+        // Only process new results starting at ev.resultIndex to avoid re-processing old results
+        interimTranscript = '';
+        let finalTranscript = '';
+        const start = typeof ev.resultIndex === 'number' ? ev.resultIndex : 0;
+        for (let i = start; i < ev.results.length; i++) {
+            const res = ev.results[i];
+            if (res.isFinal) finalTranscript += res[0].transcript;
+            else interimTranscript += res[0].transcript;
+        }
+        // show interim and append finals to textarea
+        const interim = document.getElementById('voiceInterim'); if (interim) interim.textContent = (interimTranscript || '');
+        const ta = document.getElementById('voiceTextarea'); if (ta && finalTranscript) {
+            // append final transcript and clear interim
+            ta.value = (ta.value ? ta.value + ' ' : '') + finalTranscript.trim();
+            if (interim) interim.textContent = '';
+        }
+    };
+    recognition.onend = () => {
+        // In continuous mode onend may fire between phrases; keep overlay open until user stops
+        recognizing = false;
+        // don't auto-send in continuous flow; user will press Send or Stop
+    };
+}
+
+function speakMsg(btn,text){
+    if(currentSpeakingBtn===btn&&speechSynthesis.speaking){speechSynthesis.cancel();currentSpeakingBtn=null;currentSpeech=null;btn.classList.remove('speaking');btn.innerHTML='🔊 Озвучить';return;}
+    speechSynthesis.cancel();
+    const u=new SpeechSynthesisUtterance(text);u.lang='ru-RU';u.rate=0.9;
+    const v=speechSynthesis.getVoices();const rv=v.find(x=>x.lang.startsWith('ru'));if(rv)u.voice=rv;
+    btn.classList.add('speaking');btn.innerHTML=' Остановить';currentSpeakingBtn=btn;currentSpeech=u;
+    u.onend=()=>{btn.classList.remove('speaking');btn.innerHTML='🔊 Озвучить';currentSpeakingBtn=null;};
+    u.onerror=()=>{btn.classList.remove('speaking');btn.innerHTML='🔊 Озвучить';currentSpeakingBtn=null;};
+    speechSynthesis.speak(u);
+}
+if(speechSynthesis.onvoiceschanged!==undefined)speechSynthesis.onvoiceschanged=()=>speechSynthesis.getVoices();
+
+// Voice input controls: openVoice / stopVoice
+// Voice controls: openVoice/start recognition, stopVoice(stop recognition), sendVoice(send textarea), closeVoiceOverlay
+function openVoice(){
+    const overlay = document.getElementById('voiceOverlay'); if (overlay) overlay.classList.add('active');
+    // clear previous
+    const ta = document.getElementById('voiceTextarea'); if (ta) ta.value = '';
+    const interim = document.getElementById('voiceInterim'); if (interim) interim.textContent = 'Слушаю...';
+    if (recognition) {
+        try { recognition.start(); } catch(e) { console.warn('recognition.start error', e); }
+        return;
+    }
+    // fallback: fake recognition that fills textarea after a short delay
+    voiceTimer = setTimeout(()=>{
+        const ta = document.getElementById('voiceTextarea'); if (ta) ta.value = 'Я попал в ДТП';
+        showToast('Распознано: "Я попал в ДТП"');
+    }, 1200);
+}
+
+function stopVoice(){
+    if (recognition && recognizing) { try { recognition.stop(); } catch(e){} }
+    // keep overlay open so user may press Send or Close
+    if (voiceTimer) { clearTimeout(voiceTimer); voiceTimer = null; }
+}
+
+function sendVoice(){
+    // move textarea to chat input and send
+    const ta = document.getElementById('voiceTextarea'); if (!ta) return;
+    const text = ta.value.trim();
+    if (text) {
+        const inp = document.getElementById('chatInput'); if (inp) inp.value = text;
+        sendMsg();
+    }
+    // stop recognition if running
+    if (recognition && recognizing) { try { recognition.stop(); } catch(e){} }
+    // close overlay
+    closeVoiceOverlay();
+}
+
+function closeVoiceOverlay(){
+    const overlay = document.getElementById('voiceOverlay'); if (overlay) overlay.classList.remove('active');
+    if (voiceTimer) { clearTimeout(voiceTimer); voiceTimer = null; }
+    if (recognition && recognizing) { try { recognition.stop(); } catch(e){} }
+}
+
+// Photo
+function handlePhoto(e){const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=function(ev){attachedPhoto=ev.target.result;document.getElementById('previewImg').src=attachedPhoto;document.getElementById('photoPreview').classList.add('active');};r.readAsDataURL(f);e.target.value='';}
+function removePhoto(){attachedPhoto=null;document.getElementById('photoPreview').classList.remove('active');document.getElementById('previewImg').src='';}
+
+// Documents
+function updDoc(){showToast('Данные обновлены ✓');}
+
+// QR
+function showQR(){const g=document.getElementById('qrGrid');g.innerHTML='';const p=genQR();for(let i=0;i<441;i++){const c=document.createElement('div');c.className='qr-cell'+(p[i]?' white':'');g.appendChild(c);}document.getElementById('qrModal').classList.add('active');}
+function genQR(){const p=[],s=21;for(let i=0;i<s*s;i++){const r=Math.floor(i/s),c=i%s;const tl=(r<7&&c<7),tr=(r<7&&c>=s-7),bl=(r>=s-7&&c<7);if(tl||tr||bl){const lr=tl?r:(tr?r:r-(s-7)),lc=tl?c:(tr?c-(s-7):c);if(lr===0||lr===6||lc===0||lc===6)p.push(false);else if(lr>=2&&lr<=4&&lc>=2&&lc<=4)p.push(false);else p.push(true);}else{p.push(Math.random()>0.5);}}return p;}
+function closeQR(){document.getElementById('qrModal').classList.remove('active');}
+document.getElementById('qrModal').addEventListener('click',function(e){if(e.target===this)closeQR();});
+
+// Password
+function openPassChange(){document.getElementById('passwordModal').classList.add('active');}
+function closePassChange(){document.getElementById('passwordModal').classList.remove('active');document.getElementById('oldPass').value='';document.getElementById('newPass').value='';document.getElementById('confPass').value='';}
+function savePass(){const o=document.getElementById('oldPass').value,n=document.getElementById('newPass').value,c=document.getElementById('confPass').value;if(!o||!n||!c){showToast('Заполните все поля');return;}if(n!==c){showToast('Пароли не совпадают');return;}if(n.length<6){showToast('Пароль слишком короткий');return;}closePassChange();showToast('Пароль изменён ✓');}
+document.getElementById('passwordModal').addEventListener('click',function(e){if(e.target===this)closePassChange();});
+
+// Name
+function openNameEdit(){document.getElementById('nameModal').classList.add('active');}
+function closeNameEdit(){document.getElementById('nameModal').classList.remove('active');}
+function saveName(){const n=document.getElementById('nameInput').value.trim();if(!n){showToast('Введите ФИО');return;}document.getElementById('profileName').textContent=n;document.getElementById('passportName').textContent=n;closeNameEdit();showToast('ФИО обновлено ✓');}
+document.getElementById('nameModal').addEventListener('click',function(e){if(e.target===this)closeNameEdit();});
+
+// Chat History
+function openHistory(){document.getElementById('historyOverlay').classList.add('active');}
+function closeHistory(){document.getElementById('historyOverlay').classList.remove('active');}
+function loadChat(idx){
+    closeHistory();
+    const h=chatHistories[idx];if(!h)return;
+    const c=document.getElementById('chatMessages');const t=document.getElementById('typingIndicator');
+    c.querySelectorAll('.message').forEach(m=>m.remove());
+    h.messages.forEach(msg=>{
+        const m=document.createElement('div');m.className='message '+msg.type;
+        let f=msg.text.replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>').replace(/\n/g,'<br>');
+        const plain=msg.text.replace(/\*\*/g,'').replace(/\n/g,' ');
+        if(msg.type==='bot'){
+            m.innerHTML=`<div class="message-content"><div class="message-text">${f}</div></div><button class="speak-btn" onclick="speakMsg(this,'${plain.replace(/'/g,"\\'")}')">🔊 Озвучить</button>`;
+        }else{m.innerHTML=`<div class="message-text">${f}</div>`;}
+        c.insertBefore(m,t);
+    });
+    c.scrollTop=c.scrollHeight;
+}
+function newChat(){
+    const c=document.getElementById('chatMessages');const t=document.getElementById('typingIndicator');
+    c.querySelectorAll('.message').forEach(m=>m.remove());
+    const im=document.createElement('div');im.className='message bot';
+    im.innerHTML=`<div class="message-content"><div class="message-text">Новый чат! Чем могу помочь?</div></div><button class="speak-btn" onclick="speakMsg(this,'Новый чат! Чем могу помочь?')"> Озвучить</button><div class="message-time">Сейчас</div>`;
+    c.insertBefore(im,t);c.scrollTop=c.scrollHeight;
+}
+
+// Instructions
+function toggleInstr(el){el.classList.toggle('open');}
+
+// Constructor
+function openConstructor(){document.getElementById('constructorOverlay').classList.add('active');}
+function closeConstructor(){document.getElementById('constructorOverlay').classList.remove('active');}
+
+// Dragging for constructor
+function startDrag(e,id){
+    e.preventDefault();
+    dragTarget=document.getElementById(id);
+    const rect=dragTarget.getBoundingClientRect();
+    dragOffset.x=e.clientX-rect.left;
+    dragOffset.y=e.clientY-rect.top;
+    document.addEventListener('mousemove',onDrag);
+    document.addEventListener('mouseup',stopDrag);
+}
+function startDragTouch(e,id){
+    e.preventDefault();
+    dragTarget=document.getElementById(id);
+    const rect=dragTarget.getBoundingClientRect();
+    const touch=e.touches[0];
+    dragOffset.x=touch.clientX-rect.left;
+    dragOffset.y=touch.clientY-rect.top;
+    document.addEventListener('touchmove',onDragTouch,{passive:false});
+    document.addEventListener('touchend',stopDrag);
+}
+function onDrag(e){
+    if(!dragTarget)return;
+    const map=document.getElementById('constructorMap');
+    const mapRect=map.getBoundingClientRect();
+    let x=e.clientX-mapRect.left-dragOffset.x;
+    let y=e.clientY-mapRect.top-dragOffset.y;
+    x=Math.max(0,Math.min(mapRect.width-dragTarget.offsetWidth,x));
+    y=Math.max(0,Math.min(mapRect.height-dragTarget.offsetHeight,y));
+    dragTarget.style.left=x+'px';
+    dragTarget.style.top=y+'px';
+}
+function onDragTouch(e){
+    if(!dragTarget)return;
+    e.preventDefault();
+    const map=document.getElementById('constructorMap');
+    const mapRect=map.getBoundingClientRect();
+    const touch=e.touches[0];
+    let x=touch.clientX-mapRect.left-dragOffset.x;
+    let y=touch.clientY-mapRect.top-dragOffset.y;
+    x=Math.max(0,Math.min(mapRect.width-dragTarget.offsetWidth,x));
+    y=Math.max(0,Math.min(mapRect.height-dragTarget.offsetHeight,y));
+    dragTarget.style.left=x+'px';
+    dragTarget.style.top=y+'px';
+}
+function stopDrag(){
+    dragTarget=null;
+    document.removeEventListener('mousemove',onDrag);
+    document.removeEventListener('mouseup',stopDrag);
+    document.removeEventListener('touchmove',onDragTouch);
+    document.removeEventListener('touchend',stopDrag);
+}
+
+// --- Map module (adapted from 1.html) ---
+// Note: add your Yandex API key to API_KEY below if you want real tiles.
+const API_KEY = 'fa15591b-44bb-47d7-9eeb-86816cf48e40';
+const TILE_URL = `https://tiles.api-maps.yandex.ru/v1/tiles/?apikey=${API_KEY}&lang=ru_RU&l=map&x={x}&y={y}&z={z}`;
+let center = { lat: 56.663931, lon: 60.651721 };
+// start at the maximum zoom so the user can zoom out if needed
+let zoom = 19;
+let tileSize = 256;
+let stageWidth = 900, stageHeight = 600;
+// Tile request queue and throttling to avoid 429 Too Many Requests
+const TILE_QUEUE = [];
+let TILE_ACTIVE = 0;
+const TILE_MAX_CONCURRENCY = 6;
+const TILE_MAX_RETRIES = 4;
+function processTileQueue(){
+    while(TILE_ACTIVE < TILE_MAX_CONCURRENCY && TILE_QUEUE.length){
+        const task = TILE_QUEUE.shift();
+        TILE_ACTIVE++;
+        (function runTask(t){
+            fetch(t.url, { mode: 'cors' }).then(resp=>{
+                if(resp.status === 200){
+                    return resp.blob().then(b=>({ ok:true, blob:b }));
+                } else if(resp.status === 429){
+                    return { ok:false, status:429 };
+                } else {
+                    return { ok:false, status:resp.status };
+                }
+            }).then(res=>{
+                if(res.ok){
+                    const img = document.createElement('img');
+                    img.style.position = 'absolute';
+                    img.style.left = t.left + 'px';
+                    img.style.top = t.top + 'px';
+                    img.style.width = tileSize + 'px';
+                    img.style.height = tileSize + 'px';
+                    img.style.border = 'none';
+                    img.onload = ()=>{};
+                    img.onerror = ()=>{ img.style.backgroundColor = '#d4cfb0'; };
+                    img.src = URL.createObjectURL(res.blob);
+                    tilesContainer.appendChild(img);
+                } else if(res.status === 429 && t.retries < TILE_MAX_RETRIES){
+                    t.retries++;
+                    // exponential backoff
+                    const backoff = 300 * Math.pow(2, t.retries);
+                    setTimeout(()=>{ TILE_QUEUE.push(t); processTileQueue(); }, backoff);
+                } else {
+                    // final fallback: show placeholder tile (colored block)
+                    const placeholder = document.createElement('div');
+                    placeholder.style.position = 'absolute';
+                    placeholder.style.left = t.left + 'px';
+                    placeholder.style.top = t.top + 'px';
+                    placeholder.style.width = tileSize + 'px';
+                    placeholder.style.height = tileSize + 'px';
+                    placeholder.style.background = '#d4cfb0';
+                    tilesContainer.appendChild(placeholder);
+                }
+            }).catch(err=>{
+                // network error -> retry
+                if(t.retries < TILE_MAX_RETRIES){ t.retries++; const backoff = 300 * Math.pow(2, t.retries); setTimeout(()=>{ TILE_QUEUE.push(t); processTileQueue(); }, backoff); }
+                else { const placeholder = document.createElement('div'); placeholder.style.position='absolute'; placeholder.style.left=t.left+'px'; placeholder.style.top=t.top+'px'; placeholder.style.width=tileSize+'px'; placeholder.style.height=tileSize+'px'; placeholder.style.background='#d4cfb0'; tilesContainer.appendChild(placeholder); }
+            }).finally(()=>{ TILE_ACTIVE--; processTileQueue(); });
+        })(task);
+    }
+}
+const tilesContainer = document.getElementById('tilesContainer');
+const shapeCanvas = document.getElementById('shapeCanvas');
+const ctx = shapeCanvas.getContext('2d');
+const mapStageDiv = document.getElementById('mapStage');
+
+let rectangles = [];
+let nextId = 1;
+let selectedShapeId = null;
+let dragType = null;
+let dragStartX = 0, dragStartY = 0;
+let initialRectParams = null;
+
+function latLonToPixels(lat, lon, zoomLevel) {
+    const earthRadius = 6378137;
+    const originShift = Math.PI * earthRadius;
+    const mx = lon * originShift / 180.0;
+    let my = Math.log(Math.tan((90 + lat) * Math.PI / 360)) / (Math.PI / 180);
+    my = my * originShift / 180.0;
+    const totalPixels = tileSize * Math.pow(2, zoomLevel);
+    const px = (mx + originShift) / (originShift * 2) * totalPixels;
+    const py = (originShift - my) / (originShift * 2) * totalPixels;
+    return { px, py };
+}
+
+function pixelsToLatLon(px, py, zoomLevel) {
+    const earthRadius = 6378137;
+    const originShift = Math.PI * earthRadius;
+    const totalPixels = tileSize * Math.pow(2, zoomLevel);
+    const mx = px / totalPixels * (originShift * 2) - originShift;
+    const my = originShift - py / totalPixels * (originShift * 2);
+    const lon = (mx / originShift) * 180;
+    const lat = Math.atan(Math.sinh(my / earthRadius)) * 180 / Math.PI;
+    return { lat, lon };
+}
+
+function updateMapTiles() {
+    if(!tilesContainer) return;
+    tilesContainer.innerHTML = '';
+    const centerPx = latLonToPixels(center.lat, center.lon, zoom);
+    const leftPx = centerPx.px - stageWidth / 2;
+    const topPx = centerPx.py - stageHeight / 2;
+    const startX = Math.floor(leftPx / tileSize);
+    const startY = Math.floor(topPx / tileSize);
+    const endX = Math.ceil((leftPx + stageWidth) / tileSize);
+    const endY = Math.ceil((topPx + stageHeight) / tileSize);
+    // Enqueue tile requests with throttling and retry-on-429
+    for (let x = startX; x <= endX; x++) {
+        for (let y = startY; y <= endY; y++) {
+            const tileUrl = TILE_URL.replace('{x}', x).replace('{y}', y).replace('{z}', zoom);
+            const left = Math.round(x * tileSize - leftPx);
+            const top = Math.round(y * tileSize - topPx);
+            TILE_QUEUE.push({ url: tileUrl, left, top, retries: 0 });
+        }
+    }
+    processTileQueue();
+    mapStageDiv.style.width = stageWidth + 'px';
+    mapStageDiv.style.height = stageHeight + 'px';
+    tilesContainer.style.width = stageWidth + 'px';
+    tilesContainer.style.height = stageHeight + 'px';
+    shapeCanvas.width = stageWidth; shapeCanvas.height = stageHeight;
+    shapeCanvas.style.width = stageWidth + 'px'; shapeCanvas.style.height = stageHeight + 'px';
+    redrawShapes();
+    // update visible center coordinates in the modal header/status
+    const centerCoordsEl = document.getElementById('centerCoords');
+    if (centerCoordsEl) centerCoordsEl.innerText = `${center.lat.toFixed(6)}, ${center.lon.toFixed(6)}`;
+}
+
+function drawRectangle(r) {
+    ctx.save();
+    ctx.translate(r.x + r.w/2, r.y + r.h/2);
+    ctx.rotate(r.angle * Math.PI / 180);
+    ctx.translate(-(r.x + r.w/2), -(r.y + r.h/2));
+    ctx.fillStyle = r.color || 'rgba(255,200,100,0.5)';
+    ctx.fillRect(r.x, r.y, r.w, r.h);
+    ctx.strokeStyle = r.borderColor || '#cc5500'; ctx.lineWidth = 3; ctx.strokeRect(r.x, r.y, r.w, r.h);
+    ctx.beginPath(); ctx.arc(r.x + r.w/2, r.y + r.h/2, 5, 0, 2*Math.PI); ctx.fillStyle = '#ffaa33'; ctx.fill();
+    ctx.restore();
+}
+
+function drawControlHandles(rect) {
+    const cx = rect.x + rect.w/2; const cy = rect.y + rect.h/2;
+    // draw center handle
+    ctx.beginPath(); ctx.arc(cx, cy, 8, 0, 2*Math.PI); ctx.fillStyle = '#ffffffcc'; ctx.fill(); ctx.strokeStyle = '#000'; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.fillStyle = '#2c7da0'; ctx.beginPath(); ctx.arc(cx, cy, 5, 0, 2*Math.PI); ctx.fill();
+}
+
+function redrawShapes(){ ctx.clearRect(0,0,stageWidth,stageHeight); for(let r of rectangles) drawRectangle(r); if(selectedShapeId!==null){ const s=rectangles.find(x=>x.id===selectedShapeId); if(s) drawControlHandles(s);} }
+
+function globalToLocal(rect, gx, gy){ const cx=rect.x+rect.w/2; const cy=rect.y+rect.h/2; const dx=gx-cx; const dy=gy-cy; const rad=-rect.angle*Math.PI/180; const cos=Math.cos(rad); const sin=Math.sin(rad); const lx=dx*cos - dy*sin; const ly=dx*sin + dy*cos; return { x: lx + rect.w/2, y: ly + rect.h/2 }; }
+
+function hitTestRect(rect, mx, my){
+    const cx = rect.x + rect.w/2;
+    const cy = rect.y + rect.h/2;
+    const rad = rect.angle * Math.PI / 180;
+    // rotated offset for rotate handle (matches drawControlHandles math)
+    const localDy = -(rect.h/2 + 20);
+    const ox = 0 * Math.cos(rad) - localDy * Math.sin(rad);
+    const oy = 0 * Math.sin(rad) + localDy * Math.cos(rad);
+    const rotateHandleX = cx + ox;
+    const rotateHandleY = cy + oy;
+    // Only detect center/body for move; rotation is activated via Ctrl+click inside the body
+    const CENTER_HIT_RADIUS = 12;
+    if (Math.hypot(mx - cx, my - cy) <= CENTER_HIT_RADIUS) return 'move';
+    const local = globalToLocal(rect, mx, my);
+    if (local.x >= 0 && local.x <= rect.w && local.y >= 0 && local.y <= rect.h) return 'move';
+    return null;
+}
+
+function getMouseCoordLocal(e){ const rect = shapeCanvas.getBoundingClientRect(); const scaleX = shapeCanvas.width / rect.width; const scaleY = shapeCanvas.height / rect.height; let clientX, clientY; if(e.touches){ clientX = e.touches[0].clientX; clientY = e.touches[0].clientY; } else { clientX = e.clientX; clientY = e.clientY; } let canvasX = (clientX - rect.left) * scaleX; let canvasY = (clientY - rect.top) * scaleY; canvasX = Math.min(Math.max(0,canvasX),stageWidth); canvasY = Math.min(Math.max(0,canvasY),stageHeight); return { mx: canvasX, my: canvasY }; }
+
+function onPointerDownMap(e){
+    e.preventDefault();
+    const { mx, my } = getMouseCoordLocal(e);
+    // Find top-most rectangle under pointer (iterate from end)
+    let topRect = null;
+    for (let i = rectangles.length - 1; i >= 0; i--) {
+        const r = rectangles[i];
+        // quick bounding-box test in global space using globalToLocal
+        const local = globalToLocal(r, mx, my);
+        if (local.x >= 0 && local.x <= r.w && local.y >= 0 && local.y <= r.h) { topRect = r; break; }
+    }
+
+    if (topRect) {
+        // determine which handle (if any) was hit using hitTestRect
+        const handle = hitTestRect(topRect, mx, my);
+        selectedShapeId = topRect.id;
+        redrawShapes();
+        // If Ctrl is pressed and click is inside the body, treat as rotate
+        const isCtrl = !!(e.ctrlKey || e.metaKey);
+        if (isCtrl && handle === 'move') {
+            // start rotation drag from inside body when Ctrl held
+            dragType = 'rotate';
+            const cx = topRect.x + topRect.w/2; const cy = topRect.y + topRect.h/2;
+            dragStartX = Math.atan2(my - cy, mx - cx) * 180 / Math.PI;
+            initialRectParams = { angle: topRect.angle };
+            shapeCanvas.style.cursor = 'grabbing';
+            return;
+        }
+        if (handle === 'rotate') {
+            // start rotation drag
+            dragType = 'rotate';
+            const cx = topRect.x + topRect.w/2; const cy = topRect.y + topRect.h/2;
+            // store initial angle and the starting pointer angle
+            dragStartX = Math.atan2(my - cy, mx - cx) * 180 / Math.PI;
+            initialRectParams = { angle: topRect.angle };
+            shapeCanvas.style.cursor = 'grabbing';
+            // prevent map recenter on handle interaction
+            return;
+        } else if (handle === 'move') {
+            dragType = 'move';
+            dragStartX = mx; dragStartY = my;
+            initialRectParams = { x: topRect.x, y: topRect.y };
+            shapeCanvas.style.cursor = 'grabbing';
+            return;
+        } else {
+            // clicked inside shape but not on special handles: select only
+            dragType = null;
+            return;
+        }
+    }
+
+    // Click on background: recenter map to clicked point
+    selectedShapeId = null; redrawShapes();
+    // compute pixel coordinates of clicked point in global WebMercator pixels
+    const centerPx = latLonToPixels(center.lat, center.lon, zoom);
+    const leftPx = centerPx.px - stageWidth / 2;
+    const topPx = centerPx.py - stageHeight / 2;
+    const clickPx = leftPx + mx;
+    const clickPy = topPx + my;
+    const latlon = pixelsToLatLon(clickPx, clickPy, zoom);
+    center.lat = latlon.lat; center.lon = latlon.lon;
+    updateMapTiles();
+}
+
+function onPointerMoveMap(e){
+    if (!dragType) return;
+    e.preventDefault();
+    const { mx, my } = getMouseCoordLocal(e);
+    const selected = rectangles.find(r => r.id === selectedShapeId);
+    if (!selected) { dragType = null; shapeCanvas.style.cursor = 'crosshair'; return; }
+    if (dragType === 'move') {
+        selected.x = initialRectParams.x + (mx - dragStartX);
+        selected.y = initialRectParams.y + (my - dragStartY);
+        // clamp within stage
+        selected.x = Math.max( -5000, Math.min(5000, selected.x));
+        selected.y = Math.max( -5000, Math.min(5000, selected.y));
+        shapeCanvas.style.cursor = 'grabbing';
+        redrawShapes();
+    } else if (dragType === 'rotate') {
+        const cx = selected.x + selected.w/2; const cy = selected.y + selected.h/2;
+        let currentAngle = Math.atan2(my - cy, mx - cx) * 180 / Math.PI;
+        let newAngle = initialRectParams.angle + (currentAngle - dragStartX);
+        // normalize angle to [-180,180)
+        newAngle = ((newAngle + 180) % 360) - 180;
+        selected.angle = newAngle;
+        shapeCanvas.style.cursor = 'grabbing';
+        redrawShapes();
+    }
+}
+
+function onPointerUpMap(e){
+    if (dragType) {
+        dragType = null;
+        initialRectParams = null;
+    }
+    e.preventDefault();
+    shapeCanvas.style.cursor = 'crosshair';
+}
+
+function addRectangle(){ rectangles.push({ id: nextId++, x: stageWidth/2 - 40, y: stageHeight/2 - 25, w: 80, h: 50, angle:0, color:'rgba(245,180,80,0.55)', borderColor:'#bb5e00' }); selectedShapeId = nextId-1; redrawShapes(); }
+function clearAll(){ rectangles = []; selectedShapeId = null; redrawShapes(); }
+async function saveAsJpg(){ const compositeCanvas = document.createElement('canvas'); compositeCanvas.width = stageWidth; compositeCanvas.height = stageHeight; const compCtx = compositeCanvas.getContext('2d'); const imgElements = Array.from(tilesContainer.querySelectorAll('img')); for(let img of imgElements){ if(img.complete && img.naturalWidth>0){ compCtx.drawImage(img, parseFloat(img.style.left), parseFloat(img.style.top), tileSize, tileSize); } } compCtx.drawImage(shapeCanvas,0,0); const link = document.createElement('a'); link.download='dtp_schema.jpg'; link.href = compositeCanvas.toDataURL('image/jpeg',0.92); link.click(); }
+
+function resizeStageMap(){
+    const mapStageEl = document.getElementById('mapStage');
+    if(!mapStageEl) return;
+    const rect = mapStageEl.getBoundingClientRect();
+    // compute integer pixel sizes for canvas
+    stageWidth = Math.max(200, Math.round(rect.width));
+    stageHeight = Math.max(150, Math.round(rect.height));
+    updateMapTiles();
+}
+
+window.addEventListener('resize', ()=>resizeStageMap());
+shapeCanvas.addEventListener('mousedown', onPointerDownMap);
+window.addEventListener('mousemove', onPointerMoveMap);
+window.addEventListener('mouseup', onPointerUpMap);
+shapeCanvas.addEventListener('touchstart', onPointerDownMap);
+window.addEventListener('touchmove', onPointerMoveMap);
+window.addEventListener('touchend', onPointerUpMap);
+// change cursor when hovering handles
+shapeCanvas.addEventListener('mousemove', function(e){
+    const { mx, my } = getMouseCoordLocal(e);
+    // Do not update hover cursor while actively dragging
+    if (dragType) return;
+    const isCtrl = !!(e.ctrlKey || e.metaKey);
+    let found = false;
+    for (let i = rectangles.length - 1; i >= 0; i--) {
+        const r = rectangles[i];
+        const h = hitTestRect(r, mx, my);
+        if (h === 'move') {
+            // if Ctrl is held, indicate rotate by alias cursor when hovering body
+            if (isCtrl) { shapeCanvas.style.cursor = 'alias'; found = true; break; }
+            shapeCanvas.style.cursor = 'grab'; found = true; break;
+        }
+    }
+    if (!found) shapeCanvas.style.cursor = 'crosshair';
+});
+const addRectBtn = document.getElementById('addRectBtn'); if(addRectBtn) addRectBtn.addEventListener('click', addRectangle);
+const clearAllBtn = document.getElementById('clearAllBtn'); if(clearAllBtn) clearAllBtn.addEventListener('click', clearAll);
+const saveJpgBtn = document.getElementById('saveJpgBtn'); if(saveJpgBtn) saveJpgBtn.addEventListener('click', saveAsJpg);
+const centerCoordsEl = document.getElementById('centerCoords'); if(centerCoordsEl) centerCoordsEl.innerHTML = `${center.lat.toFixed(6)}, ${center.lon.toFixed(6)}`;
+
+// Zoom controls
+const MIN_ZOOM = 0;
+const MAX_ZOOM = 19;
+function setZoom(newZoom){
+    const z = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, newZoom));
+    if(z===zoom) return;
+    zoom = z;
+    updateMapTiles();
+    updateZoomButtons();
+}
+function updateZoomButtons(){
+    const inBtn = document.getElementById('zoomInBtn');
+    const outBtn = document.getElementById('zoomOutBtn');
+    if(inBtn) inBtn.disabled = (zoom >= MAX_ZOOM);
+    if(outBtn) outBtn.disabled = (zoom <= MIN_ZOOM);
+}
+const zIn = document.getElementById('zoomInBtn'); if(zIn) zIn.addEventListener('click', ()=>setZoom(zoom+1));
+const zOut = document.getElementById('zoomOutBtn'); if(zOut) zOut.addEventListener('click', ()=>setZoom(zoom-1));
+updateZoomButtons();
+
+// Add a couple of sample rectangles
+rectangles.push({ id: nextId++, x: 200, y: 250, w: 100, h: 55, angle: 8, color: 'rgba(210,80,40,0.55)', borderColor:'#a03110' });
+rectangles.push({ id: nextId++, x: 550, y: 350, w: 90, h: 50, angle: -5, color: 'rgba(80,130,210,0.55)', borderColor:'#1f6390' });
+selectedShapeId = 1;
+
+// Override openConstructor to also initialize map sizing
+const originalOpenConstructor = openConstructor;
+window.openConstructor = function(){ originalOpenConstructor(); setTimeout(()=>{ resizeStageMap(); },50); };
+
+
+// Toast
+function showToast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);}
+</script>
+
+</body>
+</html>
