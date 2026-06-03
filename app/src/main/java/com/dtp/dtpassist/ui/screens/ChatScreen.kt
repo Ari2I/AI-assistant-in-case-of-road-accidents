@@ -47,6 +47,8 @@ private val quickPrompts = listOf(
     "Второй участник спорит",
 )
 
+private const val constructorPrompt = "Конструктор схемы"
+
 @Composable
 fun ChatScreen(state: UiState, vm: AssistantViewModel, onOpenConstructor: () -> Unit) {
     val listState = rememberLazyListState()
@@ -108,22 +110,6 @@ fun ChatScreen(state: UiState, vm: AssistantViewModel, onOpenConstructor: () -> 
             }
         }
 
-        // Open Constructor Shortcut
-        if (state.messages.any { message: ChatMessage -> message.text.contains("ДТП", ignoreCase = true) }) {
-            Button(
-                onClick = onOpenConstructor,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                shape = RoundedCornerShape(16.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Primary)
-            ) {
-                Icon(Icons.Default.Map, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text("Открыть конструктор схемы")
-            }
-        }
-
         // Quick Suggestions
         LazyRow(
             modifier = Modifier
@@ -132,6 +118,9 @@ fun ChatScreen(state: UiState, vm: AssistantViewModel, onOpenConstructor: () -> 
             contentPadding = PaddingValues(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            item {
+                SuggestionChip(constructorPrompt, onClick = onOpenConstructor)
+            }
             items(quickPrompts) { prompt ->
                 SuggestionChip(prompt) {
                     vm.input(prompt)
